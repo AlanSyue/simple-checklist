@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Check List</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css" rel="stylesheet">
+  <style>
+    .completed-item {
+      text-decoration: line-through;
+      opacity: 0.6;
+    }
+    .item-time {
+      font-size: 0.8rem;
+      color: #6c757d;
+    }
+    .checklist-container {
+      max-width: 600px;
+      margin: 0 auto;
+    }
+    .fw-medium, .flex-grow-1 span {
+      word-break: break-all;
+      white-space: pre-line;
+    }
+  </style>
+</head>
+<body class="bg-light">
+  <div class="container py-4">
+    <div class="checklist-container">
+      <div class="card shadow-sm">
+        <div class="card-header bg-primary text-white">
+          <h2 class="mb-0"><i class="bi bi-check2-square me-2"></i>待辦清單</h2>
+        </div>
+        <div class="card-body">
+          <!-- 新增項目區域 -->
+          <div class="row mb-4 g-2">
+            <div class="col-md-8">
+              <input id="item" class="form-control" placeholder="新增項目..." />
+            </div>
+            <div class="col-md-4 d-grid">
+              <button onclick="addItem()" class="btn btn-primary w-100 mt-2 mt-md-0">
+                <i class="bi bi-plus-circle me-1"></i>新增
+              </button>
+            </div>
+          </div>
+
+          <!-- 檢查清單 -->
+          <div id="list" class="list-group">
+            <!-- 項目會在這裡動態生成 -->
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const API_BASE = "http://localhost:7788";
+    let items = [];
+
+    async function load() {
+      try {
+        const res = await fetch(API_BASE + "/api/checklist/pending");
+        items = await res.json();
+        render();
+      } catch (error) {
+        console.error("載入失敗:", error);
+        showAlert("載入失敗，請檢查後端服務是否啟動", "danger");
+      }
+    }
+
+    function render() {
+      const list = document.getElementById("list");
+      
+      // 過濾未完成的項目
+      const pendingItems = items.filter(item => !item.checked);
+      
+      list.innerHTML = "";
+      
+      if (pendingItems.length === 0) {
+        list.innerHTML = `
+          <div class="text-center text-muted py-4">
+            <i class="bi bi-check-circle display-4"></i>
+            <p class="mt-2">太棒了！所有項目都完成了！</p>
+          </div>
+        `;
+      } else {
+        pendingItems.forEach((item, i) => {
+          const originalIndex = items.findIndex(originalItem => originalItem.id === item.id);
+          const itemElement = document.createElement("div");
+          itemElement.className = "list-group-item d-flex align-items-center";
+          itemElement.innerHTML = `
+            <div class="form-check me-3">
+              <input class="form-check-input" type="checkbox" onchange="toggle(${originalIndex})">
+            </div>
+            <div class="flex-grow-1" id="item-text-${item.id}">
+              <span>${item.text}</span>
+            </div>
+            <button class="btn btn-sm btn-outline-secondary ms-2" onclick="editItem(${originalIndex})"><i class="bi bi-pencil"></i></button>
+            <button class="btn btn-sm btn-outline-danger ms-2" onclick="deleteItem(${originalIndex})"><i class="bi bi-trash"></i></button>
+          `;
+          list.appendChild(itemElement);
+        });
+      }
+    }
+
+    function addItem() {
+      const input = document.getElementById("item");
+      if (input.value.trim()) {
+        fetch(API_BASE + "/api/checklist", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ items: [{ text: input.value, checked: false }] })
+        }).then(() => {
+          input.value = "";
+          load();
+          showAlert("項目新增成功！", "success");
+        });
+      }
+    }
+
+    function toggle(i) {
+      const item = items[i];
+      fetch(API_BASE + `/api/checklist/${item.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ checked: !item.checked })
+      }).then(() => {
+        load();
+        showAlert("項目已完成！", "success");
+      });
+    }
+
+    function showAlert(message, type) {
+      const alertDiv = document.createElement("div");
+      alertDiv.className = `alert alert-${type} alert-dismissible fade show position-fixed`;
+      alertDiv.style.cssText = "top: 20px; right: 20px; z-index: 1050; min-width: 300px;";
+      alertDiv.innerHTML = `
+        ${message}
+        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+      `;
+      document.body.appendChild(alertDiv);
+      
+      // 3秒後自動消失
+      setTimeout(() => {
+        if (alertDiv.parentNode) {
+          alertDiv.remove();
+        }
+      }, 3000);
+    }
+
+    // 按 Enter 鍵新增項目
+    document.getElementById("item").addEventListener("keypress", function(e) {
+      if (e.key === "Enter") {
+        addItem();
+      }
+    });
+
+    // 編輯功能
+    window.editItem = function(i) {
+      const item = items[i];
+      const textDiv = document.getElementById(`item-text-${item.id}`);
+      textDiv.innerHTML = `<input type='text' class='form-control form-control-sm' id='edit-input-${item.id}' value='${item.text}' style='max-width: 200px; display: inline-block;'>
+        <button class='btn btn-sm btn-primary ms-1' onclick='saveEdit(${i})'>儲存</button>
+        <button class='btn btn-sm btn-secondary ms-1' onclick='cancelEdit(${i})'>取消</button>`;
+      document.getElementById(`edit-input-${item.id}`).focus();
+    }
+    window.saveEdit = function(i) {
+      const item = items[i];
+      const newText = document.getElementById(`edit-input-${item.id}`).value.trim();
+      if (newText && newText !== item.text) {
+        fetch(API_BASE + `/api/checklist/${item.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text: newText })
+        }).then(() => {
+          load();
+          showAlert("項目已更新！", "success");
+        });
+      } else {
+        load();
+      }
+    }
+    window.cancelEdit = function(i) {
+      load();
+    }
+    // 刪除功能
+    window.deleteItem = function(i) {
+      const item = items[i];
+      if (confirm("確定要刪除這個項目嗎？")) {
+        fetch(API_BASE + `/api/checklist/${item.id}`, {
+          method: "DELETE"
+        }).then(() => {
+          load();
+          showAlert("項目已刪除！", "success");
+        });
+      }
+    }
+
+    // 載入初始資料
+    load();
+  </script>
+  
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>

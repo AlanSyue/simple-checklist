@@ -1,0 +1,17 @@
+version: '3.8'
+
+name: checklist
+
+services:
+  checklist-api:
+    build: ./backend
+    ports:
+      - "7788:8080"
+    volumes:
+      - checklist-db:/app/data
+    restart: always
+    environment:
+      - GIN_MODE=release
+    user: "1000:1000"  # 使用非 root 用户运行，避免权限问题
+volumes:
+  checklist-db:
