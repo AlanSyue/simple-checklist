@@ -55,12 +55,12 @@
   </div>
 
   <script>
-    const API_BASE = "http://localhost:7788";
+    const API_BASE = "/api";
     let items = [];
 
     async function load() {
       try {
-        const res = await fetch(API_BASE + "/api/checklist/pending");
+        const res = await fetch(API_BASE + "/checklist/pending");
         items = await res.json();
         render();
       } catch (error) {
@@ -107,7 +107,7 @@
     function addItem() {
       const input = document.getElementById("item");
       if (input.value.trim()) {
-        fetch(API_BASE + "/api/checklist", {
+        fetch(API_BASE + "/checklist", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ items: [{ text: input.value, checked: false }] })
@@ -121,7 +121,7 @@
 
     function toggle(i) {
       const item = items[i];
-      fetch(API_BASE + `/api/checklist/${item.id}`, {
+      fetch(API_BASE + `/checklist/${item.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ checked: !item.checked })
@@ -169,7 +169,7 @@
       const item = items[i];
       const newText = document.getElementById(`edit-input-${item.id}`).value.trim();
       if (newText && newText !== item.text) {
-        fetch(API_BASE + `/api/checklist/${item.id}`, {
+        fetch(API_BASE + `/checklist/${item.id}`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ text: newText })
@@ -188,7 +188,7 @@
     window.deleteItem = function(i) {
       const item = items[i];
       if (confirm("確定要刪除這個項目嗎？")) {
-        fetch(API_BASE + `/api/checklist/${item.id}`, {
+        fetch(API_BASE + `/checklist/${item.id}`, {
           method: "DELETE"
         }).then(() => {
           load();

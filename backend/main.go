@@ -37,22 +37,24 @@ func main() {
 	db, _ := gorm.Open(sqlite.Open("data/checklist.db"), &gorm.Config{})
 	db.AutoMigrate(&ChecklistItem{})
 
+	api := r.Group("/api")
+
 	// 獲取所有檢查清單項目
-	r.GET("/api/checklist", func(c *gin.Context) {
+	api.GET("/checklist", func(c *gin.Context) {
 		var items []ChecklistItem
 		db.Find(&items)
 		c.JSON(200, items)
 	})
 
 	// 獲取未完成的項目（checked: false）
-	r.GET("/api/checklist/pending", func(c *gin.Context) {
+	api.GET("/checklist/pending", func(c *gin.Context) {
 		var items []ChecklistItem
 		db.Where("checked = ?", false).Find(&items)
 		c.JSON(200, items)
 	})
 
 	// 新增項目
-	r.POST("/api/checklist", func(c *gin.Context) {
+	api.POST("/checklist", func(c *gin.Context) {
 		var body ChecklistPayload
 		if err := c.ShouldBindJSON(&body); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid payload"})
@@ -65,7 +67,7 @@ func main() {
 	})
 
 	// 單筆更新
-	r.PATCH("/api/checklist/:id", func(c *gin.Context) {
+	api.PATCH("/checklist/:id", func(c *gin.Context) {
 		var update struct {
 			Checked *bool   `json:"checked"`
 			Text    *string `json:"text"`
@@ -91,7 +93,7 @@ func main() {
 	})
 
 	// 單筆刪除
-	r.DELETE("/api/checklist/:id", func(c *gin.Context) {
+	api.DELETE("/checklist/:id", func(c *gin.Context) {
 		id := c.Param("id")
 		if err := db.Delete(&ChecklistItem{}, id).Error; err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Delete failed"})
