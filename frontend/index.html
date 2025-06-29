@@ -60,7 +60,7 @@
 
     async function load() {
       try {
-        const res = await fetch(API_BASE + "/checklist/pending");
+        const res = await fetch(API_BASE + "/checklist");
         items = await res.json();
         render();
       } catch (error) {
