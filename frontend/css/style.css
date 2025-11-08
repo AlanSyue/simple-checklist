@@ -1,0 +1,15 @@
+.completed-item {
+  text-decoration: line-through;
+  opacity: 0.6;
+}
+.item-time {
+  font-size: 0.8rem;
+  color: #6c757d;
+}
+.fw-medium, .flex-grow-1 span {
+  word-break: break-all;
+  white-space: pre-line;
+}
+.container-fluid {
+  max-width: 1200px;
+}
