@@ -154,6 +154,9 @@ func main() {
 	r.GET("/picking.html", func(c *gin.Context) {
 		c.File("./frontend/picking.html")
 	})
+	r.GET("/picking-list-print.html", func(c *gin.Context) {
+		c.File("./frontend/picking-list-print.html")
+	})
 	r.Static("/js", "./frontend/js")
 	r.Static("/css", "./frontend/css")
 	r.StaticFile("/nav.html", "./frontend/nav.html")

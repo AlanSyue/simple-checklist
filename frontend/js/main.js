@@ -40,6 +40,7 @@ function showOrderDetails(orderId) {
         order.line_items.forEach((lineItem) => {
           const metas = lineItem.meta_data || [];
           const metaText = metas
+            .filter((m) => m.key !== '_reduced_stock') // 排除 _reduced_stock
             .map((m) => {
               const key = m.display_key || m.key;
               const value = m.display_value || m.value;

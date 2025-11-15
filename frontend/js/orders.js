@@ -5,6 +5,7 @@ let selectedFilterTags = [];
 let showCompletedFilter = false;
 let showRemarkFilter = false;
 let showCustomerNoteFilter = false;
+let selectedOrderIds = new Set(); // Store selected order IDs for export
 
 document.addEventListener("DOMContentLoaded", function() {
   detailModal = new bootstrap.Modal(document.getElementById('orderDetailModal'));
@@ -196,8 +197,10 @@ function renderOrders() {
   filteredOrders.forEach(order => {
     const row = document.createElement("tr");
     const shippingMethod = order.shipping_lines && order.shipping_lines.length > 0 ? order.shipping_lines[0].method_title : 'N/A';
+    const isSelected = selectedOrderIds.has(order.id);
 
     row.innerHTML = `
+      <td><input type="checkbox" class="form-check-input order-checkbox" data-order-id="${order.id}" ${isSelected ? 'checked' : ''} onchange="toggleOrderSelection(${order.id})"></td>
       <td><a href="#" onclick="showOrderDetails(${order.id}); return false;">${order.id}</a></td>
       <td>${order.shipping.first_name}</td>
       <td>${order.payment_method_title || 'N/A'}</td>
@@ -214,6 +217,9 @@ function renderOrders() {
     // Render tags using the new component
     renderTagInput(order.id, order.order_metadata.tags || []);
   });
+
+  updateSelectedCount();
+  updateSelectAllCheckbox();
 }
 
 function renderTagInput(orderId, initialTags) {
@@ -347,4 +353,245 @@ async function updateOrderMetadata(orderId) {
     console.error("更新失敗:", error);
     showAlert("更新訂單資料失敗", "danger");
   }
+}
+
+// 切換訂單選取狀態
+function toggleOrderSelection(orderId) {
+  if (selectedOrderIds.has(orderId)) {
+    selectedOrderIds.delete(orderId);
+  } else {
+    selectedOrderIds.add(orderId);
+  }
+  updateSelectedCount();
+  updateSelectAllCheckbox();
+}
+
+// 更新選取數量顯示
+function updateSelectedCount() {
+  const countElement = document.getElementById('selected-count');
+  if (countElement) {
+    countElement.textContent = `已選擇 ${selectedOrderIds.size} 筆訂單`;
+  }
+}
+
+// 更新全選checkbox狀態
+function updateSelectAllCheckbox() {
+  const selectAllCheckbox = document.getElementById('select-all-checkbox');
+  if (!selectAllCheckbox) return;
+
+  const orderCheckboxes = document.querySelectorAll('.order-checkbox');
+  const allChecked = orderCheckboxes.length > 0 && Array.from(orderCheckboxes).every(cb => cb.checked);
+  const someChecked = Array.from(orderCheckboxes).some(cb => cb.checked);
+
+  selectAllCheckbox.checked = allChecked;
+  selectAllCheckbox.indeterminate = someChecked && !allChecked;
+}
+
+// 全選/取消全選
+function toggleSelectAll() {
+  const selectAllCheckbox = document.getElementById('select-all-checkbox');
+  const isChecked = selectAllCheckbox.checked;
+
+  selectedOrderIds.clear();
+
+  if (isChecked) {
+    allOrders.forEach(order => {
+      if (!showCompletedFilter || order.order_metadata.is_completed) {
+        selectedOrderIds.add(order.id);
+      }
+    });
+  }
+
+  renderOrders();
+}
+
+// 匯出揀貨單
+async function exportPickingList() {
+  if (selectedOrderIds.size === 0) {
+    showAlert("請至少選擇一筆訂單", "warning");
+    return;
+  }
+
+  try {
+    // Get selected orders data
+    const selectedOrders = allOrders.filter(order => selectedOrderIds.has(order.id));
+
+    // Fetch detailed order information for each selected order
+    const ordersWithDetails = await Promise.all(
+      selectedOrders.map(async (order) => {
+        try {
+          const res = await fetch(`/api/orders/${order.id}`);
+          if (!res.ok) throw new Error(`Failed to fetch order ${order.id}`);
+          return await res.json();
+        } catch (error) {
+          console.error(`Error fetching order ${order.id}:`, error);
+          return order; // Fallback to basic order data
+        }
+      })
+    );
+
+    // 將訂單數據存入 localStorage
+    localStorage.setItem('pickingListOrders', JSON.stringify(ordersWithDetails));
+
+    // 打開新視窗顯示揀貨單
+    window.open('picking-list-print.html', '_blank');
+
+    showAlert("已開啟揀貨單預覽視窗", "success");
+  } catch (error) {
+    console.error("匯出揀貨單失敗:", error);
+    showAlert("匯出揀貨單失敗", "danger");
+  }
+}
+
+// 產生揀貨單 PDF
+function generatePickingListPDF(orders) {
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({
+    orientation: 'portrait',
+    unit: 'mm',
+    format: 'a4'
+  });
+
+  // Set Chinese font
+  doc.setFont('NotoSansTC-normal', 'normal');
+
+  const exportDate = new Date().toLocaleString('zh-TW', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit'
+  });
+
+  let yPosition = 15;
+  const pageHeight = doc.internal.pageSize.height;
+
+  orders.forEach((order, index) => {
+    // Check if we need a new page
+    if (yPosition > pageHeight - 100 && index > 0) {
+      doc.addPage();
+      yPosition = 15;
+    }
+
+    // If this is not the first order, add separator
+    if (index > 0) {
+      doc.setLineWidth(0.5);
+      doc.line(10, yPosition, 200, yPosition);
+      yPosition += 10;
+    }
+
+    // Export date (only on first order)
+    if (index === 0) {
+      doc.setFontSize(10);
+      doc.text(`匯出日期：${exportDate}`, 10, yPosition);
+      yPosition += 10;
+    }
+
+    // Order details
+    doc.setFontSize(12);
+    doc.text(`訂單 ID: ${order.id}`, 10, yPosition);
+    yPosition += 7;
+
+    doc.setFontSize(10);
+
+    const customerName = order.shipping?.first_name || '未知';
+    const email = order.billing?.email || '無';
+    const phone = order.billing?.phone || '無';
+    const total = order.total || '0';
+
+    // Get shipping info
+    let shippingMethod = '自行取貨';
+    let pickupNumber = '';
+
+    if (order.shipping_lines && order.shipping_lines.length > 0) {
+      shippingMethod = order.shipping_lines[0].method_title || '自行取貨';
+    }
+
+    const ecpayMeta = order.meta_data?.find(m => m.key === "_ecpay_shipping_info");
+    if (ecpayMeta && typeof ecpayMeta.value === "object") {
+      const firstKey = Object.keys(ecpayMeta.value)[0];
+      const data = ecpayMeta.value[firstKey];
+      const paymentNo = data.PaymentNo || "";
+      const validationNo = data.ValidationNo || "";
+      pickupNumber = paymentNo + validationNo;
+    }
+
+    doc.text(`訂購人姓名：${customerName}`, 10, yPosition);
+    yPosition += 6;
+    doc.text(`訂購人Email：${email}`, 10, yPosition);
+    yPosition += 6;
+    doc.text(`訂購人電話：${phone}`, 10, yPosition);
+    yPosition += 6;
+    doc.text(`訂單金額：${total}`, 10, yPosition);
+    yPosition += 6;
+    doc.text(`出貨方式：${shippingMethod}`, 10, yPosition);
+    yPosition += 6;
+
+    if (pickupNumber) {
+      doc.text(`取貨單號：${pickupNumber}`, 10, yPosition);
+      yPosition += 6;
+    }
+
+    yPosition += 3;
+
+    // Product details table
+    const tableData = [];
+    if (order.line_items && order.line_items.length > 0) {
+      order.line_items.forEach(item => {
+        const metas = item.meta_data || [];
+        const metaText = metas
+          .filter(m => m.key !== '_reduced_stock')
+          .map(m => {
+            const key = m.display_key || m.key;
+            const value = m.display_value || m.value;
+            return `${key}: ${value}`;
+          })
+          .join(", ") || '無';
+
+        tableData.push([
+          item.name || '無',
+          metaText,
+          item.quantity || 0,
+          item.price || '0',
+          '', // 揀貨
+          ''  // 備註
+        ]);
+      });
+    }
+
+    doc.autoTable({
+      startY: yPosition,
+      head: [['商品名稱', '規格名稱', '數量', '價格', '揀貨', '備註']],
+      body: tableData,
+      theme: 'grid',
+      styles: {
+        fontSize: 9,
+        cellPadding: 3,
+        font: 'NotoSansTC-normal',
+        lineColor: [0, 0, 0],
+        lineWidth: 0.1
+      },
+      headStyles: {
+        fillColor: [66, 139, 202],
+        textColor: 255,
+        font: 'NotoSansTC-normal',
+        halign: 'center'
+      },
+      columnStyles: {
+        0: { cellWidth: 50 },
+        1: { cellWidth: 50 },
+        2: { cellWidth: 15, halign: 'center' },
+        3: { cellWidth: 20, halign: 'right' },
+        4: { cellWidth: 15, halign: 'center' },
+        5: { cellWidth: 40 }
+      },
+      margin: { left: 10, right: 10 }
+    });
+
+    yPosition = doc.lastAutoTable.finalY + 10;
+  });
+
+  // Save PDF
+  const filename = `揀貨單_${new Date().getTime()}.pdf`;
+  doc.save(filename);
 }
