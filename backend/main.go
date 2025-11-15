@@ -405,7 +405,7 @@ func generatePickingList(orders []WooOrder) []PickingListItem {
 func fetchProcessingOrders() ([]WooOrder, error) {
 // ... (rest of the file is the same)
 
-	url := "https://flowers.fenny-studio.com/wp-json/wc/v3/orders?status=processing"
+	url := "https://flowers.fenny-studio.com/wp-json/wc/v3/orders?status=processing&per_page=100"
 	
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
