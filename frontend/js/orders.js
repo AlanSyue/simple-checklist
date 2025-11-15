@@ -54,6 +54,11 @@ document.addEventListener("DOMContentLoaded", function() {
       loadOrders(); // Reload orders to apply customer note filter
     });
   }
+
+  const selectAllCheckbox = document.getElementById('select-all-checkbox');
+  if (selectAllCheckbox) {
+    selectAllCheckbox.addEventListener('change', toggleSelectAll);
+  }
 });
 
 async function loadOrders() {

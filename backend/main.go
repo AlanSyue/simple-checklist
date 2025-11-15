@@ -76,6 +76,7 @@ type OrderMetadata struct {
 
 type WooOrder struct {
 	ID                 int          `json:"id"`
+	DateCreated        string       `json:"date_created"`
 	Shipping           ShippingInfo `json:"shipping"`
 	Billing            BillingInfo  `json:"billing"`
 	Total              string       `json:"total"`

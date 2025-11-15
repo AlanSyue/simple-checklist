@@ -60,6 +60,7 @@ function createOrderSection(order, index) {
   const phone = order.billing?.phone || '無';
   const total = order.total || '0';
   const paymentMethod = order.payment_method_title || 'N/A';
+  const dateCreated = order.date_created ? new Date(order.date_created).toLocaleString('zh-TW') : 'N/A';
 
   // 取得出貨方式
   let shippingMethod = '自行取貨';
@@ -83,6 +84,10 @@ function createOrderSection(order, index) {
     <div class="order-info-row">
       <div class="order-info-label">訂購人姓名：</div>
       <div>${customerName}</div>
+    </div>
+    <div class="order-info-row">
+      <div class="order-info-label">訂單成立時間：</div>
+      <div>${dateCreated}</div>
     </div>
     <div class="order-info-row">
       <div class="order-info-label">訂購人 Email：</div>
