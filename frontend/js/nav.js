@@ -13,6 +13,10 @@ document.addEventListener("DOMContentLoaded", function() {
           document.getElementById("nav-orders").classList.add("active");
         } else if (page === "picking.html") {
           document.getElementById("nav-picking").classList.add("active");
+        } else if (page === "sell-picking.html") {
+          document.getElementById("nav-sell-picking").classList.add("active");
+        } else if (page === "sell-orders.html") {
+          document.getElementById("nav-sell-orders").classList.add("active");
         }
       });
   }
