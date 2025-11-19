@@ -19,6 +19,27 @@
         <div class="alert alert-info mb-3" role="alert">
           <i class="bi bi-info-circle me-2"></i>此表格合併了官網訂單與賣貨便訂單的揀貨資料，商品名稱已套用對應設定。
         </div>
+        <div class="row mb-3">
+          <div class="col-md-8">
+            <label for="product-filter" class="form-label">
+              <i class="bi bi-search me-1"></i>篩選商品名稱
+            </label>
+            <input type="text" class="form-control" id="product-filter" placeholder="輸入商品名稱進行篩選...">
+          </div>
+          <div class="col-md-4 d-flex align-items-end">
+            <button id="calculate-total-btn" class="btn btn-success w-100">
+              <i class="bi bi-calculator me-1"></i>計算總數
+            </button>
+          </div>
+        </div>
+        <div id="total-summary" class="alert alert-success d-none" role="alert">
+          <h5 class="alert-heading"><i class="bi bi-check-circle me-2"></i>總數統計</h5>
+          <hr>
+          <p class="mb-0">
+            <strong>商品種類：</strong><span id="total-products" class="ms-2 badge bg-primary">0</span>
+            <strong class="ms-4">總數量：</strong><span id="total-quantity" class="ms-2 badge bg-success fs-5">0</span>
+          </p>
+        </div>
         <div id="loading-message" class="text-center py-5">
           <div class="spinner-border text-primary" role="status">
             <span class="visually-hidden">載入中...</span>
