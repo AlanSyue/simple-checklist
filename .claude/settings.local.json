@@ -13,7 +13,9 @@
       "Bash(lsof -ti:7799)",
       "Bash(xargs kill -9)",
       "Bash(docker-compose down)",
-      "Bash(bash:*)"
+      "Bash(bash:*)",
+      "Bash(go build:*)",
+      "Bash(go mod tidy:*)"
     ],
     "deny": [],
     "ask": []

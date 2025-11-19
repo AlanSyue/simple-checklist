@@ -158,9 +158,26 @@ type ProductPickingItem struct {
 	OrderNos    []string `json:"order_nos"`
 }
 
+type CombinedPickingItem struct {
+	ProductName    string `json:"product_name"`
+	TotalQty       int    `json:"total_qty"`
+	WooCommerceQty int    `json:"woocommerce_qty"`
+	SellQty        int    `json:"sell_qty"`
+	Sources        string `json:"sources"` // "官網", "賣貨便", or "官網 + 賣貨便"
+}
+
 type UploadBatch struct {
 	ID         uint      `json:"id" gorm:"primaryKey"`
 	UploadedAt time.Time `json:"uploaded_at"`
+}
+
+type ProductNameMapping struct {
+	ID           uint      `json:"id" gorm:"primaryKey"`
+	OriginalName string    `json:"original_name" gorm:"uniqueIndex:idx_name_source;not null"`
+	Source       string    `json:"source" gorm:"uniqueIndex:idx_name_source;not null"` // "woocommerce" or "sell"
+	MappedName   string    `json:"mapped_name" gorm:"not null"`
+	CreatedAt    time.Time `json:"created_at" gorm:"autoCreateTime"`
+	UpdatedAt    time.Time `json:"updated_at" gorm:"autoUpdateTime"`
 }
 
 var normalizedHeaderMapping = map[string]string{
@@ -528,7 +545,7 @@ func buildUploadedOrderSummaries(rows []UploadedOrder) []UploadedOrderSummary {
 	return summaries
 }
 
-func buildProductPicking(rows []UploadedOrder) []ProductPickingItem {
+func buildProductPicking(db *gorm.DB, rows []UploadedOrder) []ProductPickingItem {
 	type accumulator struct {
 		totalQty int
 		orders   map[string]struct{}
@@ -545,10 +562,13 @@ func buildProductPicking(rows []UploadedOrder) []ProductPickingItem {
 			continue
 		}
 
-		acc, ok := byProduct[name]
+		// 套用名稱 mapping
+		mappedName := getMappedProductName(db, name, "sell")
+
+		acc, ok := byProduct[mappedName]
 		if !ok {
 			acc = &accumulator{orders: map[string]struct{}{}}
-			byProduct[name] = acc
+			byProduct[mappedName] = acc
 		}
 
 		acc.totalQty += row.Qty
@@ -581,6 +601,78 @@ func buildProductPicking(rows []UploadedOrder) []ProductPickingItem {
 	return list
 }
 
+func buildCombinedPickingList(db *gorm.DB, wooOrders []WooOrder, sellOrders []UploadedOrder) []CombinedPickingItem {
+	// Create a map to track product quantities by source
+	type productData struct {
+		wooQty  int
+		sellQty int
+	}
+
+	productMap := make(map[string]*productData)
+
+	// Process WooCommerce orders
+	for _, order := range wooOrders {
+		for _, item := range order.LineItems {
+			mappedName := getMappedProductName(db, item.Name, "woocommerce")
+
+			if _, ok := productMap[mappedName]; !ok {
+				productMap[mappedName] = &productData{}
+			}
+			productMap[mappedName].wooQty += item.Quantity
+		}
+	}
+
+	// Process Sell orders
+	for _, row := range sellOrders {
+		if row.ProductName == "" {
+			continue
+		}
+
+		name := strings.TrimSpace(row.ProductName)
+		if name == "" {
+			continue
+		}
+
+		mappedName := getMappedProductName(db, name, "sell")
+
+		if _, ok := productMap[mappedName]; !ok {
+			productMap[mappedName] = &productData{}
+		}
+		productMap[mappedName].sellQty += row.Qty
+	}
+
+	// Build the combined list
+	var list []CombinedPickingItem
+	for productName, data := range productMap {
+		sources := ""
+		if data.wooQty > 0 && data.sellQty > 0 {
+			sources = "官網 + 賣貨便"
+		} else if data.wooQty > 0 {
+			sources = "官網"
+		} else {
+			sources = "賣貨便"
+		}
+
+		list = append(list, CombinedPickingItem{
+			ProductName:    productName,
+			TotalQty:       data.wooQty + data.sellQty,
+			WooCommerceQty: data.wooQty,
+			SellQty:        data.sellQty,
+			Sources:        sources,
+		})
+	}
+
+	// Sort by total quantity (descending), then by product name
+	sort.Slice(list, func(i, j int) bool {
+		if list[i].TotalQty == list[j].TotalQty {
+			return list[i].ProductName < list[j].ProductName
+		}
+		return list[i].TotalQty > list[j].TotalQty
+	})
+
+	return list
+}
+
 func recordUploadBatch(db *gorm.DB) error {
 	return db.Create(&UploadBatch{UploadedAt: time.Now()}).Error
 }
@@ -595,6 +687,82 @@ func getLastUploadTime(db *gorm.DB) (time.Time, error) {
 		return time.Time{}, err
 	}
 	return batch.UploadedAt, nil
+}
+
+func syncProductNamesFromWooCommerce(db *gorm.DB) error {
+	orders, err := fetchProcessingOrders()
+	if err != nil {
+		return err
+	}
+
+	productNames := make(map[string]bool)
+	for _, order := range orders {
+		for _, item := range order.LineItems {
+			if item.Name != "" {
+				productNames[item.Name] = true
+			}
+		}
+	}
+
+	for name := range productNames {
+		var mapping ProductNameMapping
+		result := db.Where("original_name = ? AND source = ?", name, "woocommerce").First(&mapping)
+
+		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+			// 如果不存在，建立新的 mapping，預設 mapped_name 就是原始名稱
+			newMapping := ProductNameMapping{
+				OriginalName: name,
+				Source:       "woocommerce",
+				MappedName:   name,
+			}
+			if err := db.Create(&newMapping).Error; err != nil {
+				log.Printf("Failed to create mapping for %s: %v", name, err)
+			}
+		}
+	}
+
+	return nil
+}
+
+func syncProductNamesFromSell(db *gorm.DB) error {
+	var orders []UploadedOrder
+	if err := db.Find(&orders).Error; err != nil {
+		return err
+	}
+
+	productNames := make(map[string]bool)
+	for _, order := range orders {
+		if order.ProductName != "" {
+			productNames[order.ProductName] = true
+		}
+	}
+
+	for name := range productNames {
+		var mapping ProductNameMapping
+		result := db.Where("original_name = ? AND source = ?", name, "sell").First(&mapping)
+
+		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+			// 如果不存在，建立新的 mapping，預設 mapped_name 就是原始名稱
+			newMapping := ProductNameMapping{
+				OriginalName: name,
+				Source:       "sell",
+				MappedName:   name,
+			}
+			if err := db.Create(&newMapping).Error; err != nil {
+				log.Printf("Failed to create mapping for %s: %v", name, err)
+			}
+		}
+	}
+
+	return nil
+}
+
+func getMappedProductName(db *gorm.DB, originalName string, source string) string {
+	var mapping ProductNameMapping
+	if err := db.Where("original_name = ? AND source = ?", originalName, source).First(&mapping).Error; err == nil {
+		return mapping.MappedName
+	}
+	return originalName
 }
 
 func main() {
@@ -618,7 +786,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to connect to database after multiple attempts: %v", err)
 	}
-	db.AutoMigrate(&ChecklistItem{}, &OrderMetadata{}, &UploadedOrder{}, &UploadBatch{})
+	db.AutoMigrate(&ChecklistItem{}, &OrderMetadata{}, &UploadedOrder{}, &UploadBatch{}, &ProductNameMapping{})
 
 	// --- Gin Router Setup ---
 	r := gin.Default()
@@ -651,6 +819,12 @@ func main() {
 	})
 	r.GET("/sell-picking.html", func(c *gin.Context) {
 		serveHTML(c, "./frontend/sell-picking.html")
+	})
+	r.GET("/product-mapping.html", func(c *gin.Context) {
+		serveHTML(c, "./frontend/product-mapping.html")
+	})
+	r.GET("/combined-picking.html", func(c *gin.Context) {
+		serveHTML(c, "./frontend/combined-picking.html")
 	})
 	r.POST("/orders/upload", func(c *gin.Context) {
 		file, err := c.FormFile("file")
@@ -752,7 +926,7 @@ func main() {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
-		c.JSON(http.StatusOK, buildProductPicking(stored))
+		c.JSON(http.StatusOK, buildProductPicking(db, stored))
 	})
 
 	r.GET("/orders/uploaded/last", func(c *gin.Context) {
@@ -1044,8 +1218,83 @@ func main() {
 			return
 		}
 
-		pickingList := generatePickingList(orders)
+		pickingList := generatePickingList(db, orders)
 		c.JSON(http.StatusOK, pickingList)
+	})
+
+	api.GET("/combined-picking-list", func(c *gin.Context) {
+		// Fetch WooCommerce processing orders
+		wooOrders, err := fetchProcessingOrders()
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to fetch WooCommerce orders: %v", err)})
+			return
+		}
+
+		// Fetch uploaded Sell orders
+		var sellOrders []UploadedOrder
+		if err := db.Order("product_name, order_no").Find(&sellOrders).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to fetch Sell orders: %v", err)})
+			return
+		}
+
+		// Build combined picking list
+		combinedList := buildCombinedPickingList(db, wooOrders, sellOrders)
+		c.JSON(http.StatusOK, combinedList)
+	})
+
+	// Product Name Mapping Routes
+	api.GET("/product-mappings", func(c *gin.Context) {
+		var mappings []ProductNameMapping
+		if err := db.Order("source, original_name").Find(&mappings).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, mappings)
+	})
+
+	api.PUT("/product-mappings/:id", func(c *gin.Context) {
+		id := c.Param("id")
+		var requestBody struct {
+			MappedName string `json:"mapped_name"`
+		}
+
+		if err := c.ShouldBindJSON(&requestBody); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid payload"})
+			return
+		}
+
+		if requestBody.MappedName == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "mapped_name cannot be empty"})
+			return
+		}
+
+		var mapping ProductNameMapping
+		if err := db.First(&mapping, id).Error; err != nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Mapping not found"})
+			return
+		}
+
+		mapping.MappedName = requestBody.MappedName
+		if err := db.Save(&mapping).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+
+		c.JSON(http.StatusOK, mapping)
+	})
+
+	api.POST("/product-mappings/sync", func(c *gin.Context) {
+		if err := syncProductNamesFromWooCommerce(db); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to sync WooCommerce products: " + err.Error()})
+			return
+		}
+
+		if err := syncProductNamesFromSell(db); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to sync Sell products: " + err.Error()})
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{"message": "Product names synchronized successfully"})
 	})
 
 	r.Run(":8080")
@@ -1057,20 +1306,23 @@ type PickingListItem struct {
 	OrderIDs []int  `json:"order_ids"`
 }
 
-func generatePickingList(orders []WooOrder) []PickingListItem {
+func generatePickingList(db *gorm.DB, orders []WooOrder) []PickingListItem {
 	pickingMap := make(map[string]*PickingListItem)
 
 	for _, order := range orders {
 		for _, item := range order.LineItems {
-			if _, ok := pickingMap[item.Name]; !ok {
-				pickingMap[item.Name] = &PickingListItem{
-					Name:     item.Name,
+			// Apply product name mapping
+			mappedName := getMappedProductName(db, item.Name, "woocommerce")
+
+			if _, ok := pickingMap[mappedName]; !ok {
+				pickingMap[mappedName] = &PickingListItem{
+					Name:     mappedName,
 					Quantity: 0,
 					OrderIDs: []int{},
 				}
 			}
-			pickingMap[item.Name].Quantity += item.Quantity
-			pickingMap[item.Name].OrderIDs = append(pickingMap[item.Name].OrderIDs, order.ID)
+			pickingMap[mappedName].Quantity += item.Quantity
+			pickingMap[mappedName].OrderIDs = append(pickingMap[mappedName].OrderIDs, order.ID)
 		}
 	}
 
