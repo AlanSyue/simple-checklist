@@ -444,6 +444,19 @@ func parseDateTime(raw string) (time.Time, error) {
 }
 
 func saveUploadedOrders(db *gorm.DB, orders []UploadedOrder) error {
+	if len(orders) == 0 {
+		return nil
+	}
+
+	return db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(&orders).Error; err != nil {
+			return err
+		}
+		return nil
+	})
+}
+
+func clearUploadedOrders(db *gorm.DB) error {
 	return db.Transaction(func(tx *gorm.DB) error {
 		switch tx.Dialector.Name() {
 		case "postgres":
@@ -454,14 +467,6 @@ func saveUploadedOrders(db *gorm.DB, orders []UploadedOrder) error {
 			if err := tx.Exec("DELETE FROM uploaded_orders").Error; err != nil {
 				return err
 			}
-		}
-
-		if len(orders) == 0 {
-			return nil
-		}
-
-		if err := tx.Create(&orders).Error; err != nil {
-			return err
 		}
 		return nil
 	})
@@ -756,6 +761,14 @@ func main() {
 		c.JSON(http.StatusOK, gin.H{"last_uploaded_at": last.Format(time.RFC3339)})
 	})
 
+	r.DELETE("/orders/uploaded", func(c *gin.Context) {
+		if err := clearUploadedOrders(db); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"status": "cleared"})
+	})
+
 	r.Static("/js", "./frontend/js")
 	r.Static("/css", "./frontend/css")
 	r.StaticFile("/nav.html", "./frontend/nav.html")
@@ -955,6 +968,59 @@ func main() {
 		c.JSON(http.StatusOK, wooOrder)
 	})
 
+	api.POST("/orders/batch", func(c *gin.Context) {
+		var requestBody struct {
+			OrderIDs []int `json:"order_ids"`
+		}
+
+		if err := c.ShouldBindJSON(&requestBody); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+			return
+		}
+
+		if len(requestBody.OrderIDs) == 0 {
+			c.JSON(http.StatusOK, []WooOrder{})
+			return
+		}
+
+		if len(requestBody.OrderIDs) > 100 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Maximum 100 orders per request"})
+			return
+		}
+
+		orders, err := fetchMultipleOrders(requestBody.OrderIDs)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+
+		// Get all metadata in one query
+		var metadatas []OrderMetadata
+		if len(requestBody.OrderIDs) > 0 {
+			db.Where("order_id IN ?", requestBody.OrderIDs).Find(&metadatas)
+		}
+
+		// Create a map for easy lookup
+		metadataMap := make(map[int]OrderMetadata)
+		for _, m := range metadatas {
+			metadataMap[m.OrderID] = m
+		}
+
+		// Merge metadata with orders
+		for i := range orders {
+			if m, ok := metadataMap[orders[i].ID]; ok {
+				orders[i].OrderMetadata = m
+			} else {
+				// If metadata doesn't exist, create it
+				newMeta := OrderMetadata{OrderID: orders[i].ID, Remark: "", Tags: []string{}}
+				db.Create(&newMeta)
+				orders[i].OrderMetadata = newMeta
+			}
+		}
+
+		c.JSON(http.StatusOK, orders)
+	})
+
 	api.GET("/picking-list", func(c *gin.Context) {
 		orders, err := fetchProcessingOrders()
 		if err != nil {
@@ -1064,4 +1130,50 @@ func fetchSingleOrder(orderID int) (WooOrder, error) {
 	}
 
 	return order, nil
+}
+
+func fetchMultipleOrders(orderIDs []int) ([]WooOrder, error) {
+	if len(orderIDs) == 0 {
+		return []WooOrder{}, nil
+	}
+
+	// WooCommerce API supports fetching multiple orders using include parameter
+	// Build comma-separated list of order IDs
+	includeParam := ""
+	for i, id := range orderIDs {
+		if i > 0 {
+			includeParam += ","
+		}
+		includeParam += strconv.Itoa(id)
+	}
+
+	url := fmt.Sprintf("https://flowers.fenny-studio.com/wp-json/wc/v3/orders?include=%s&per_page=%d", includeParam, len(orderIDs))
+
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("error creating request: %w", err)
+	}
+
+	apiKey := os.Getenv("WOO_API_KEY")
+	apiSecret := os.Getenv("WOO_API_SECRET")
+	req.SetBasicAuth(apiKey, apiSecret)
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("error performing request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("received non-200 status code: %d - %s", resp.StatusCode, string(bodyBytes))
+	}
+
+	var orders []WooOrder
+	if err := json.NewDecoder(resp.Body).Decode(&orders); err != nil {
+		return nil, fmt.Errorf("error decoding response: %w", err)
+	}
+
+	return orders, nil
 }

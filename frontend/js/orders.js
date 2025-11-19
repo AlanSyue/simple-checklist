@@ -410,6 +410,70 @@ function toggleSelectAll() {
   renderOrders();
 }
 
+// 分批獲取訂單詳細資料（使用批次 API）
+async function fetchOrdersInBatches(orderIds, batchSize = 50) {
+  const results = [];
+  const totalBatches = Math.ceil(orderIds.length / batchSize);
+
+  for (let i = 0; i < orderIds.length; i += batchSize) {
+    const batch = orderIds.slice(i, i + batchSize);
+    const currentBatch = Math.floor(i / batchSize) + 1;
+
+    // 更新進度提示
+    const exportBtn = document.getElementById('export-picking-list-btn');
+    if (exportBtn) {
+      exportBtn.innerHTML = `<span class="spinner-border spinner-border-sm me-2"></span>載入中 (${currentBatch}/${totalBatches})...`;
+      exportBtn.disabled = true;
+    }
+
+    // 使用批次 API 一次獲取多筆訂單
+    try {
+      const res = await fetch('/api/orders/batch', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ order_ids: batch })
+      });
+
+      if (!res.ok) {
+        throw new Error(`Batch fetch failed with status ${res.status}`);
+      }
+
+      const batchOrders = await res.json();
+      results.push(...batchOrders);
+    } catch (error) {
+      console.error(`Error fetching batch ${currentBatch}:`, error);
+      // 如果批次 API 失敗，嘗試逐一獲取
+      console.log('Falling back to individual fetch for this batch');
+      for (const orderId of batch) {
+        try {
+          const res = await fetch(`/api/orders/${orderId}`);
+          if (res.ok) {
+            const order = await res.json();
+            results.push(order);
+          } else {
+            // 從 allOrders 中找到基本資料作為後備
+            const fallbackOrder = allOrders.find(order => order.id === orderId);
+            if (fallbackOrder) {
+              results.push(fallbackOrder);
+            }
+          }
+        } catch (err) {
+          console.error(`Error fetching order ${orderId}:`, err);
+        }
+      }
+    }
+
+    // 避免過快請求，稍微延遲（批次之間）
+    if (i + batchSize < orderIds.length) {
+      await new Promise(resolve => setTimeout(resolve, 200));
+    }
+  }
+
+  return results;
+}
+
 // 匯出揀貨單
 async function exportPickingList() {
   if (selectedOrderIds.size === 0) {
@@ -417,34 +481,64 @@ async function exportPickingList() {
     return;
   }
 
+  const exportBtn = document.getElementById('export-picking-list-btn');
+  const originalBtnHTML = exportBtn ? exportBtn.innerHTML : '';
+
+  // 先打開視窗（在用戶操作的同步上下文中）
+  const printWindow = window.open('picking-list-print.html', '_blank');
+
+  if (!printWindow) {
+    showAlert("無法打開新視窗，請檢查瀏覽器的彈出視窗設定", "warning");
+    return;
+  }
+
   try {
-    // Get selected orders data
-    const selectedOrders = allOrders.filter(order => selectedOrderIds.has(order.id));
+    if (exportBtn) {
+      exportBtn.innerHTML = `<span class="spinner-border spinner-border-sm me-2"></span>載入訂單資料...`;
+      exportBtn.disabled = true;
+    }
 
-    // Fetch detailed order information for each selected order
-    const ordersWithDetails = await Promise.all(
-      selectedOrders.map(async (order) => {
-        try {
-          const res = await fetch(`/api/orders/${order.id}`);
-          if (!res.ok) throw new Error(`Failed to fetch order ${order.id}`);
-          return await res.json();
-        } catch (error) {
-          console.error(`Error fetching order ${order.id}:`, error);
-          return order; // Fallback to basic order data
-        }
-      })
-    );
+    // Get selected order IDs
+    const orderIds = Array.from(selectedOrderIds);
 
-    // 將訂單數據存入 localStorage
-    localStorage.setItem('pickingListOrders', JSON.stringify(ordersWithDetails));
+    // 建立一個監聽器，等待新視窗載入完成
+    const loadPromise = new Promise((resolve) => {
+      if (printWindow.document.readyState === 'complete') {
+        resolve();
+      } else {
+        printWindow.addEventListener('load', resolve);
+      }
+    });
 
-    // 打開新視窗顯示揀貨單
-    window.open('picking-list-print.html', '_blank');
+    // 同時開始獲取訂單資料
+    const ordersPromise = fetchOrdersInBatches(orderIds, 50);
 
-    showAlert("已開啟揀貨單預覽視窗", "success");
+    // 等待兩者都完成
+    const [, ordersWithDetails] = await Promise.all([loadPromise, ordersPromise]);
+
+    if (ordersWithDetails.length === 0) {
+      printWindow.close();
+      throw new Error('無法載入訂單資料');
+    }
+
+    // 通過 postMessage 將資料傳遞給新視窗
+    printWindow.postMessage({
+      type: 'pickingListOrders',
+      orders: ordersWithDetails
+    }, window.location.origin);
+
+    showAlert(`已開啟揀貨單預覽視窗（${ordersWithDetails.length} 筆訂單）`, "success");
   } catch (error) {
     console.error("匯出揀貨單失敗:", error);
-    showAlert("匯出揀貨單失敗", "danger");
+    if (printWindow && !printWindow.closed) {
+      printWindow.close();
+    }
+    showAlert(`匯出揀貨單失敗：${error.message}`, "danger");
+  } finally {
+    if (exportBtn) {
+      exportBtn.disabled = false;
+      exportBtn.innerHTML = originalBtnHTML;
+    }
   }
 }
 

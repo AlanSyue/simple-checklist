@@ -1,23 +1,59 @@
-// 從 localStorage 獲取訂單數據
-document.addEventListener("DOMContentLoaded", function() {
-  const ordersData = localStorage.getItem('pickingListOrders');
+// 從 localStorage 或 postMessage 獲取訂單數據
+let ordersReceived = false;
 
-  if (!ordersData) {
-    document.getElementById('picking-list-content').innerHTML =
-      '<div class="alert alert-warning">無法載入訂單資料</div>';
+document.addEventListener("DOMContentLoaded", function() {
+  // 顯示載入中的訊息
+  document.getElementById('picking-list-content').innerHTML =
+    '<div class="alert alert-info"><span class="spinner-border spinner-border-sm me-2"></span>正在載入訂單資料...</div>';
+
+  // 先嘗試從 localStorage 獲取（向後兼容）
+  const ordersData = localStorage.getItem('pickingListOrders');
+  if (ordersData) {
+    try {
+      const orders = JSON.parse(ordersData);
+      renderPickingList(orders);
+      ordersReceived = true;
+      // 清除 localStorage 中的資料（可選）
+      // localStorage.removeItem('pickingListOrders');
+      return;
+    } catch (error) {
+      console.error('解析 localStorage 訂單資料失敗:', error);
+    }
+  }
+
+  // 設置超時，如果 10 秒內沒有收到資料，顯示錯誤
+  const timeout = setTimeout(() => {
+    if (!ordersReceived) {
+      document.getElementById('picking-list-content').innerHTML =
+        '<div class="alert alert-warning">等待訂單資料超時，請重試</div>';
+    }
+  }, 10000);
+
+  // 清除超時計時器的函數
+  window.clearLoadTimeout = () => clearTimeout(timeout);
+});
+
+// 監聽來自父視窗的訂單資料
+window.addEventListener('message', function(event) {
+  // 驗證訊息來源
+  if (event.origin !== window.location.origin) {
+    console.warn('Received message from unexpected origin:', event.origin);
     return;
   }
 
-  try {
-    const orders = JSON.parse(ordersData);
-    renderPickingList(orders);
+  if (event.data && event.data.type === 'pickingListOrders') {
+    ordersReceived = true;
+    if (window.clearLoadTimeout) {
+      window.clearLoadTimeout();
+    }
 
-    // 清除 localStorage 中的資料（可選）
-    // localStorage.removeItem('pickingListOrders');
-  } catch (error) {
-    console.error('解析訂單資料失敗:', error);
-    document.getElementById('picking-list-content').innerHTML =
-      '<div class="alert alert-danger">訂單資料格式錯誤</div>';
+    try {
+      renderPickingList(event.data.orders);
+    } catch (error) {
+      console.error('渲染訂單資料失敗:', error);
+      document.getElementById('picking-list-content').innerHTML =
+        '<div class="alert alert-danger">渲染訂單資料失敗</div>';
+    }
   }
 });
 

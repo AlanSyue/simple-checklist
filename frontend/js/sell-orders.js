@@ -18,6 +18,12 @@ document.addEventListener("DOMContentLoaded", () => {
   if (form) {
     form.addEventListener("submit", handleUpload);
   }
+
+  const clearBtn = document.getElementById("clear-orders-btn");
+  if (clearBtn) {
+    clearBtn.addEventListener("click", handleClearOrders);
+  }
+
   fetchAggregatedOrders();
   refreshLastUploadTime(lastUploadElementId);
 });
@@ -31,38 +37,49 @@ async function handleUpload(event) {
     return;
   }
 
-  const file = fileInput.files?.[0];
-  if (!file) {
+  const files = fileInput.files;
+  if (!files || files.length === 0) {
     showAlert("請先選擇 .xlsx 檔案", "warning");
     return;
   }
 
-  if (!file.name.toLowerCase().endsWith(".xlsx")) {
-    showAlert("只接受 .xlsx 副檔名的檔案", "warning");
-    return;
+  for (const file of files) {
+    if (!file.name.toLowerCase().endsWith(".xlsx")) {
+      showAlert(`檔案 "${file.name}" 不是 .xlsx 格式`, "warning");
+      return;
+    }
   }
 
   uploadButton.disabled = true;
   uploadButton.innerHTML = `<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> 上傳中...`;
 
   try {
-    const formData = new FormData();
-    formData.append("file", file);
+    let totalRows = 0;
 
-    const response = await fetch("/orders/upload", {
-      method: "POST",
-      body: formData,
-    });
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      const formData = new FormData();
+      formData.append("file", file);
 
-    if (!response.ok) {
-      const errorText = await response.text().catch(() => response.statusText);
-      throw new Error(errorText || "上傳失敗，請檢查檔案格式");
+      uploadButton.innerHTML = `<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> 上傳中 (${i + 1}/${files.length})...`;
+
+      const response = await fetch("/orders/upload", {
+        method: "POST",
+        body: formData,
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text().catch(() => response.statusText);
+        throw new Error(`檔案 "${file.name}" 上傳失敗：${errorText || "請檢查檔案格式"}`);
+      }
+
+      const payload = await response.json().catch(() => ({}));
+      const rowCount = payload.rows ?? payload.count ?? 0;
+      totalRows += rowCount;
     }
 
-    const payload = await response.json().catch(() => ({}));
-    const rowCount = payload.rows ?? payload.count ?? 0;
-    updateUploadBadge(Number(rowCount));
-    showAlert(`成功寫入 ${rowCount} 筆資料`, "success");
+    updateUploadBadge(totalRows);
+    showAlert(`成功上傳 ${files.length} 個檔案，共 ${totalRows} 筆資料`, "success");
     fileInput.value = "";
     fetchAggregatedOrders();
   } catch (error) {
@@ -300,4 +317,39 @@ function setResultMessage(text, type) {
       ${text}
     </div>
   `;
+}
+
+async function handleClearOrders() {
+  if (!confirm("確定要清空所有訂單資料嗎？此操作無法復原。")) {
+    return;
+  }
+
+  const clearBtn = document.getElementById("clear-orders-btn");
+  if (!clearBtn) {
+    return;
+  }
+
+  const originalHTML = clearBtn.innerHTML;
+  clearBtn.disabled = true;
+  clearBtn.innerHTML = `<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> 清空中...`;
+
+  try {
+    const response = await fetch("/orders/uploaded", {
+      method: "DELETE",
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => response.statusText);
+      throw new Error(errorText || "清空失敗");
+    }
+
+    showAlert("已清空所有訂單資料", "success");
+    fetchAggregatedOrders();
+  } catch (error) {
+    console.error(error);
+    showAlert(error.message || "清空失敗，請稍後再試", "danger");
+  } finally {
+    clearBtn.disabled = false;
+    clearBtn.innerHTML = originalHTML;
+  }
 }
