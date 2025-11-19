@@ -623,26 +623,34 @@ func main() {
 	// --- Gin Router Setup ---
 	r := gin.Default()
 
+	// Helper function to serve HTML with no-cache headers
+	serveHTML := func(c *gin.Context, filepath string) {
+		c.Header("Cache-Control", "no-cache, no-store, must-revalidate")
+		c.Header("Pragma", "no-cache")
+		c.Header("Expires", "0")
+		c.File(filepath)
+	}
+
 	r.GET("/", func(c *gin.Context) {
-		c.File("./frontend/index.html")
+		serveHTML(c, "./frontend/index.html")
 	})
 	r.GET("/index.html", func(c *gin.Context) {
-		c.File("./frontend/index.html")
+		serveHTML(c, "./frontend/index.html")
 	})
 	r.GET("/orders.html", func(c *gin.Context) {
-		c.File("./frontend/orders.html")
+		serveHTML(c, "./frontend/orders.html")
 	})
 	r.GET("/picking.html", func(c *gin.Context) {
-		c.File("./frontend/picking.html")
+		serveHTML(c, "./frontend/picking.html")
 	})
 	r.GET("/picking-list-print.html", func(c *gin.Context) {
-		c.File("./frontend/picking-list-print.html")
+		serveHTML(c, "./frontend/picking-list-print.html")
 	})
 	r.GET("/sell-orders.html", func(c *gin.Context) {
-		c.File("./frontend/sell-orders.html")
+		serveHTML(c, "./frontend/sell-orders.html")
 	})
 	r.GET("/sell-picking.html", func(c *gin.Context) {
-		c.File("./frontend/sell-picking.html")
+		serveHTML(c, "./frontend/sell-picking.html")
 	})
 	r.POST("/orders/upload", func(c *gin.Context) {
 		file, err := c.FormFile("file")
@@ -769,7 +777,15 @@ func main() {
 		c.JSON(http.StatusOK, gin.H{"status": "cleared"})
 	})
 
-	r.Static("/js", "./frontend/js")
+	// Static files with cache control
+	r.GET("/js/*filepath", func(c *gin.Context) {
+		// Disable cache for JS files to avoid stale code
+		c.Header("Cache-Control", "no-cache, no-store, must-revalidate")
+		c.Header("Pragma", "no-cache")
+		c.Header("Expires", "0")
+		c.File("./frontend/js/" + c.Param("filepath"))
+	})
+
 	r.Static("/css", "./frontend/css")
 	r.StaticFile("/nav.html", "./frontend/nav.html")
 
