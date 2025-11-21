@@ -109,3 +109,26 @@ function showOrderDetails(orderId) {
       showAlert("載入訂單詳細資料失敗", "danger");
     });
 }
+
+function formatDate(dateStr) {
+    if (!dateStr) return 'N/A';
+
+    try {
+        const date = new Date(dateStr);
+        // Check if the date is valid
+        if (isNaN(date.getTime())) {
+            return dateStr; // or 'Invalid Date'
+        }
+        return date.toLocaleString('zh-TW', {
+            year: 'numeric',
+            month: 'short',
+            day: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit'
+        });
+    } catch (e) {
+        console.error('Error formatting date:', e);
+        return dateStr;
+    }
+}
