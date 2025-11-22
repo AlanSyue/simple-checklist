@@ -1496,6 +1496,21 @@ func main() {
 		finalWooOrders := filterWooOrdersByExcludedProducts(db, matchedWooOrders, req.ExcludedProductNames)
 		finalSellOrders := filterSellOrdersByExcludedProducts(db, matchedSellOrders, req.ExcludedProductNames)
 
+		// Sort WooCommerce orders by date_created (ascending)
+		sort.Slice(finalWooOrders, func(i, j int) bool {
+			dateI, errI := time.Parse("2006-01-02T15:04:05", finalWooOrders[i].DateCreated)
+			dateJ, errJ := time.Parse("2006-01-02T15:04:05", finalWooOrders[j].DateCreated)
+			if errI != nil || errJ != nil {
+				return false
+			}
+			return dateI.Before(dateJ)
+		})
+
+		// Sort Sell orders by ordered_at (ascending)
+		sort.Slice(finalSellOrders, func(i, j int) bool {
+			return finalSellOrders[i].OrderedAt.Before(finalSellOrders[j].OrderedAt)
+		})
+
 		c.JSON(http.StatusOK, gin.H{
 			"woo_orders":  finalWooOrders,
 			"sell_orders": finalSellOrders,

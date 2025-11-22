@@ -1,7 +1,7 @@
 // 從 localStorage 或 postMessage 獲取訂單數據
 let ordersReceived = false;
 
-document.addEventListener("DOMContentLoaded", function() {
+document.addEventListener("DOMContentLoaded", function () {
   // 顯示載入中的訊息
   document.getElementById('picking-list-content').innerHTML =
     '<div class="alert alert-info"><span class="spinner-border spinner-border-sm me-2"></span>正在載入訂單資料...</div>';
@@ -34,7 +34,7 @@ document.addEventListener("DOMContentLoaded", function() {
 });
 
 // 監聽來自父視窗的訂單資料
-window.addEventListener('message', function(event) {
+window.addEventListener('message', function (event) {
   // 驗證訊息來源
   if (event.origin !== window.location.origin) {
     console.warn('Received message from unexpected origin:', event.origin);
@@ -181,10 +181,11 @@ function createProductsTable(lineItems) {
   const thead = document.createElement('thead');
   thead.innerHTML = `
     <tr>
-      <th style="width: 30%">商品名稱</th>
-      <th style="width: 25%">規格名稱</th>
+      <th style="width: 25%">商品名稱</th>
+      <th style="width: 20%">規格名稱</th>
       <th style="width: 10%">數量</th>
       <th style="width: 10%">價格</th>
+      <th style="width: 10%">總額</th>
       <th style="width: 10%">揀貨</th>
       <th style="width: 15%">備註</th>
     </tr>
@@ -195,7 +196,7 @@ function createProductsTable(lineItems) {
   const tbody = document.createElement('tbody');
 
   if (lineItems.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="6" class="center">無商品</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="7" class="center">無商品</td></tr>';
   } else {
     lineItems.forEach(item => {
       const metas = item.meta_data || [];
@@ -208,12 +209,17 @@ function createProductsTable(lineItems) {
         })
         .join(", ") || '無';
 
+      const quantity = item.quantity || 0;
+      const price = parseFloat(item.price) || 0;
+      const subtotal = quantity * price;
+
       const row = document.createElement('tr');
       row.innerHTML = `
         <td>${item.name || '無'}</td>
         <td>${metaText}</td>
-        <td class="center">${item.quantity || 0}</td>
-        <td class="right">${item.price || '0'}</td>
+        <td class="center">${quantity}</td>
+        <td class="right">${Math.round(price)}</td>
+        <td class="right">${Math.round(subtotal)}</td>
         <td class="center"></td>
         <td></td>
       `;

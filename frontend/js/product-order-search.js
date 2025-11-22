@@ -31,10 +31,10 @@ document.addEventListener('DOMContentLoaded', () => {
       const response = await fetch('/api/product-mappings');
       if (!response.ok) throw new Error('Failed to load products');
       const mappings = await response.json();
-      
+
       const mappedNames = new Set(mappings.map(m => m.mapped_name));
       allProducts = Array.from(mappedNames).sort();
-      
+
       renderAllProducts();
     } catch (error) {
       console.error('Error loading products:', error);
@@ -108,6 +108,18 @@ document.addEventListener('DOMContentLoaded', () => {
     `).join('');
   }
 
+  // Helper function to format date as YYYY-MM-DD HH:mm:ss
+  function formatDateTime(dateString) {
+    const date = new Date(dateString);
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    const hours = String(date.getHours()).padStart(2, '0');
+    const minutes = String(date.getMinutes()).padStart(2, '0');
+    const seconds = String(date.getSeconds()).padStart(2, '0');
+    return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+  }
+
   function renderResults(results) {
     allSearchResults = results;
     searchResultsContainer.innerHTML = '';
@@ -117,6 +129,45 @@ document.addEventListener('DOMContentLoaded', () => {
       searchResultsContainer.innerHTML = '<div class="alert alert-warning">找不到符合條件的訂單。</div>';
       return;
     }
+
+    // Combine and normalize orders
+    const combinedOrders = [];
+
+    // Add WooCommerce orders
+    (woo_orders || []).forEach(order => {
+      const shippingMethod = order.shipping_lines && order.shipping_lines.length > 0 ? order.shipping_lines[0].method_title : 'N/A';
+      combinedOrders.push({
+        source: 'woo',
+        sourceId: order.id,
+        orderNo: order.id,
+        name: order.shipping.first_name,
+        shippingMethod: shippingMethod,
+        amount: order.total,
+        orderTime: new Date(order.date_created),
+        orderTimeStr: order.date_created,
+        note: order.customer_note || '',
+        sourceLabel: '官網'
+      });
+    });
+
+    // Add Sell orders
+    (sell_orders || []).forEach(order => {
+      combinedOrders.push({
+        source: 'sell',
+        sourceId: order.order_no,
+        orderNo: order.order_no,
+        name: order.receiver_name,
+        shippingMethod: '7-ELEVEN',
+        amount: order.total_amount,
+        orderTime: new Date(order.ordered_at),
+        orderTimeStr: order.ordered_at,
+        note: order.note || '',
+        sourceLabel: '賣貨便'
+      });
+    });
+
+    // Sort by order time (ascending)
+    combinedOrders.sort((a, b) => a.orderTime - b.orderTime);
 
     let html = `
       <div class="table-responsive">
@@ -136,35 +187,21 @@ document.addEventListener('DOMContentLoaded', () => {
           <tbody>
     `;
 
-    (woo_orders || []).forEach(order => {
-      const shippingMethod = order.shipping_lines && order.shipping_lines.length > 0 ? order.shipping_lines[0].method_title : 'N/A';
-      const orderDate = new Date(order.date_created);
-      html += `
-        <tr>
-          <td>${order.id}</td>
-          <td>${order.shipping.first_name}</td>
-          <td>${shippingMethod}</td>
-          <td>${order.total}</td>
-          <td>${orderDate.toLocaleDateString()} ${orderDate.toLocaleTimeString()}</td>
-          <td>${order.customer_note || ''}</td>
-          <td>官網</td>
-          <td><button class="btn btn-sm btn-info" onclick="showOrderDetail('woo', ${order.id})">詳細</button></td>
-        </tr>
-      `;
-    });
+    combinedOrders.forEach(order => {
+      const detailOnClick = order.source === 'woo'
+        ? `showOrderDetail('woo', ${order.sourceId})`
+        : `showOrderDetail('sell', '${order.sourceId}')`;
 
-    (sell_orders || []).forEach(order => {
-      const orderDate = new Date(order.ordered_at);
       html += `
         <tr>
-          <td>${order.order_no}</td>
-          <td>${order.receiver_name}</td>
-          <td>7-ELEVEN</td>
-          <td>${order.total_amount}</td>
-          <td>${orderDate.toLocaleDateString()} ${orderDate.toLocaleTimeString()}</td>
-          <td>${order.note || ''}</td>
-          <td>賣貨便</td>
-          <td><button class="btn btn-sm btn-info" onclick="showOrderDetail('sell', '${order.order_no}')">詳細</button></td>
+          <td>${order.orderNo}</td>
+          <td>${order.name}</td>
+          <td>${order.shippingMethod}</td>
+          <td>${order.amount}</td>
+          <td>${formatDateTime(order.orderTimeStr)}</td>
+          <td>${order.note}</td>
+          <td>${order.sourceLabel}</td>
+          <td><button class="btn btn-sm btn-info" onclick="${detailOnClick}">詳細</button></td>
         </tr>
       `;
     });
@@ -206,7 +243,7 @@ document.addEventListener('DOMContentLoaded', () => {
     e.preventDefault();
     e.currentTarget.classList.add('bg-secondary-subtle');
   }
-  
+
   function handleDragLeave(e) {
     e.currentTarget.classList.remove('bg-secondary-subtle');
   }
@@ -270,7 +307,7 @@ document.addEventListener('DOMContentLoaded', () => {
       alert('請至少選擇一個搜尋商品');
       return;
     }
-     if (productNames.length === 0 && searchModeSelect.value === 'excludes' && excludedProductNames.length === 0) {
+    if (productNames.length === 0 && searchModeSelect.value === 'excludes' && excludedProductNames.length === 0) {
       alert('請至少選擇一個搜尋商品或排除商品');
       return;
     }
@@ -308,7 +345,7 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   // --- Detail Modal Functionality ---
-  window.showOrderDetail = function(source, id) {
+  window.showOrderDetail = function (source, id) {
     let order;
     if (source === 'woo') {
       order = allSearchResults.woo_orders.find(o => o.id === id);
