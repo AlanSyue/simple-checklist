@@ -42,6 +42,9 @@ document.addEventListener('DOMContentLoaded', () => {
     productFilterInput.addEventListener('input', () => renderAllProducts(productFilterInput.value));
     searchBtn.addEventListener('click', handleSearch);
 
+    // Add product by clicking (for mobile)
+    allProductsContainer.addEventListener('click', handleProductClick);
+
     // Drag and Drop
     allProductsContainer.addEventListener('dragstart', handleDragStart);
     selectedProductsContainer.addEventListener('dragover', handleDragOver);
@@ -71,7 +74,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function renderSelectedProducts() {
     if (selectedProducts.size === 0) {
-      selectedProductsContainer.innerHTML = '<div class="text-muted p-3 text-center">將商品拖曳到此處</div>';
+      selectedProductsContainer.innerHTML = '<div class="text-muted p-3 text-center">點擊或拖曳商品至此處</div>';
       return;
     }
 
@@ -155,6 +158,17 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   // --- Event Handlers ---
+  function handleProductClick(e) {
+    const productItem = e.target.closest('.product-item');
+    if (productItem) {
+      const productName = productItem.dataset.productName;
+      if (productName) {
+        selectedProducts.add(productName);
+        renderSelectedProducts();
+      }
+    }
+  }
+
   function handleDragStart(e) {
     if (e.target.classList.contains('product-item')) {
       draggedProduct = e.target.dataset.productName;
