@@ -20,8 +20,13 @@
       user-select: none;
     }
     #selected-products {
-      min-height: 200px;
+      min-height: 150px;
       background-color: #f8f9fa;
+    }
+    #excluded-products {
+      min-height: 100px;
+      background-color: #fff0f0;
+      border: 1px dashed #dc3545;
     }
     .product-tag {
       cursor: pointer;
@@ -40,6 +45,17 @@
           <!-- Available Products -->
           <div class="col-md-5">
             <h5>所有商品</h5>
+            <div class="mb-2">
+              <strong>點擊模式:</strong>
+              <div class="form-check form-check-inline">
+                <input class="form-check-input" type="radio" name="click-mode" id="mode-add" value="add" checked>
+                <label class="form-check-label" for="mode-add">加入搜尋</label>
+              </div>
+              <div class="form-check form-check-inline">
+                <input class="form-check-input" type="radio" name="click-mode" id="mode-exclude" value="exclude">
+                <label class="form-check-label" for="mode-exclude">加入排除</label>
+              </div>
+            </div>
             <input type="text" id="product-filter" class="form-control mb-2" placeholder="篩選商品...">
             <div id="all-products" class="product-list">
               <!-- Products will be loaded here -->
@@ -48,13 +64,13 @@
 
           <!-- Selected Products & Search -->
           <div class="col-md-7">
-            <h5>拖曳商品至此處</h5>
+            <h5>搜尋商品 (點擊或拖曳至此)</h5>
             <div id="selected-products" class="product-list mb-3">
               <!-- Selected products will appear here -->
             </div>
             <div class="row">
               <div class="col-md-6">
-                <label for="search-mode" class="form-label">配對模式</label>
+                <label for="search-mode" class="form-label">搜尋模式</label>
                 <select id="search-mode" class="form-select">
                   <option value="contains" selected>包含 (Contains)</option>
                   <option value="exact">完全配對 (Exact Match)</option>
@@ -64,6 +80,16 @@
               <div class="col-md-6 d-flex align-items-end">
                 <button id="search-btn" class="btn btn-primary w-100"><i class="bi bi-search"></i> 搜尋</button>
               </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Excluded Products -->
+        <div class="row mt-3">
+          <div class="col-12">
+            <h5>排除商品 (拖曳至此)</h5>
+            <div id="excluded-products" class="product-list">
+              <!-- Excluded products will appear here -->
             </div>
           </div>
         </div>
@@ -80,7 +106,7 @@
 
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
   <script src="js/nav.js"></script>
-  <script src="js/product-order-search.js"></script>
+  <script src="js/product-order-search.js?v=1.1"></script>
 </body>
 
 <!-- Order Detail Modal -->

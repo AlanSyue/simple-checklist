@@ -768,8 +768,9 @@ func getMappedProductName(db *gorm.DB, originalName string, source string) strin
 // --- Structs and functions for Product Search ---
 
 type ProductSearchRequest struct {
-	ProductNames []string `json:"product_names"`
-	Mode         string   `json:"mode"` // "contains", "exact", "excludes"
+	ProductNames         []string `json:"product_names"`
+	Mode                 string   `json:"mode"` // "contains", "exact", "excludes"
+	ExcludedProductNames []string `json:"excluded_product_names"`
 }
 
 // matchesProductCriteria is the core logic for matching products.
@@ -845,6 +846,60 @@ func filterSellOrdersByProducts(db *gorm.DB, summaries []UploadedOrderSummary, r
 		}
 	}
 	return matchedSummaries
+}
+
+func filterWooOrdersByExcludedProducts(db *gorm.DB, orders []WooOrder, excludedProductNames []string) []WooOrder {
+	if len(excludedProductNames) == 0 {
+		return orders
+	}
+
+	excludedSet := make(map[string]bool)
+	for _, name := range excludedProductNames {
+		excludedSet[name] = true
+	}
+
+	filteredOrders := make([]WooOrder, 0)
+	for _, order := range orders {
+		shouldExclude := false
+		for _, item := range order.LineItems {
+			mappedName := getMappedProductName(db, item.Name, "woocommerce")
+			if excludedSet[mappedName] {
+				shouldExclude = true
+				break
+			}
+		}
+		if !shouldExclude {
+			filteredOrders = append(filteredOrders, order)
+		}
+	}
+	return filteredOrders
+}
+
+func filterSellOrdersByExcludedProducts(db *gorm.DB, summaries []UploadedOrderSummary, excludedProductNames []string) []UploadedOrderSummary {
+	if len(excludedProductNames) == 0 {
+		return summaries
+	}
+
+	excludedSet := make(map[string]bool)
+	for _, name := range excludedProductNames {
+		excludedSet[name] = true
+	}
+
+	filteredSummaries := make([]UploadedOrderSummary, 0)
+	for _, summary := range summaries {
+		shouldExclude := false
+		for _, item := range summary.Items {
+			mappedName := getMappedProductName(db, item.ProductName, "sell")
+			if excludedSet[mappedName] {
+				shouldExclude = true
+				break
+			}
+		}
+		if !shouldExclude {
+			filteredSummaries = append(filteredSummaries, summary)
+		}
+	}
+	return filteredSummaries
 }
 
 func main() {
@@ -1433,13 +1488,17 @@ func main() {
 		}
 		sellOrderSummaries := buildUploadedOrderSummaries(sellOrderRows)
 
-		// Filter orders
+		// Filter orders by inclusion criteria
 		matchedWooOrders := filterWooOrdersByProducts(db, wooOrders, req)
 		matchedSellOrders := filterSellOrdersByProducts(db, sellOrderSummaries, req)
 
+		// Filter orders by exclusion criteria
+		finalWooOrders := filterWooOrdersByExcludedProducts(db, matchedWooOrders, req.ExcludedProductNames)
+		finalSellOrders := filterSellOrdersByExcludedProducts(db, matchedSellOrders, req.ExcludedProductNames)
+
 		c.JSON(http.StatusOK, gin.H{
-			"woo_orders":  matchedWooOrders,
-			"sell_orders": matchedSellOrders,
+			"woo_orders":  finalWooOrders,
+			"sell_orders": finalSellOrders,
 		})
 	})
 

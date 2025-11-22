@@ -2,6 +2,7 @@ document.addEventListener('DOMContentLoaded', () => {
   // DOM Elements
   const allProductsContainer = document.getElementById('all-products');
   const selectedProductsContainer = document.getElementById('selected-products');
+  const excludedProductsContainer = document.getElementById('excluded-products');
   const productFilterInput = document.getElementById('product-filter');
   const searchBtn = document.getElementById('search-btn');
   const searchModeSelect = document.getElementById('search-mode');
@@ -11,15 +12,18 @@ document.addEventListener('DOMContentLoaded', () => {
   // State
   let allProducts = [];
   let selectedProducts = new Set();
+  let excludedProducts = new Set();
   let draggedProduct = null;
-  let allSearchResults = { woo_orders: [], sell_orders: [] }; // Store fetched results
-  let detailModal; // Bootstrap modal instance
+  let allSearchResults = { woo_orders: [], sell_orders: [] };
+  let detailModal;
 
   // --- Initialization ---
   async function initialize() {
     detailModal = new bootstrap.Modal(document.getElementById('orderDetailModal'));
     setupEventListeners();
     await loadAllProducts();
+    renderSelectedProducts();
+    renderExcludedProducts();
   }
 
   async function loadAllProducts() {
@@ -42,17 +46,23 @@ document.addEventListener('DOMContentLoaded', () => {
     productFilterInput.addEventListener('input', () => renderAllProducts(productFilterInput.value));
     searchBtn.addEventListener('click', handleSearch);
 
-    // Add product by clicking (for mobile)
+    // Add product by clicking
     allProductsContainer.addEventListener('click', handleProductClick);
 
-    // Drag and Drop
+    // Drag and Drop for Selected Products
     allProductsContainer.addEventListener('dragstart', handleDragStart);
     selectedProductsContainer.addEventListener('dragover', handleDragOver);
     selectedProductsContainer.addEventListener('dragleave', handleDragLeave);
-    selectedProductsContainer.addEventListener('drop', handleDrop);
+    selectedProductsContainer.addEventListener('drop', handleDropSelected);
 
-    // Remove selected product
+    // Drag and Drop for Excluded Products
+    excludedProductsContainer.addEventListener('dragover', handleDragOver);
+    excludedProductsContainer.addEventListener('dragleave', handleDragLeave);
+    excludedProductsContainer.addEventListener('drop', handleDropExcluded);
+
+    // Remove products
     selectedProductsContainer.addEventListener('click', handleRemoveProduct);
+    excludedProductsContainer.addEventListener('click', handleRemoveProduct);
   }
 
   // --- Rendering ---
@@ -77,9 +87,21 @@ document.addEventListener('DOMContentLoaded', () => {
       selectedProductsContainer.innerHTML = '<div class="text-muted p-3 text-center">點擊或拖曳商品至此處</div>';
       return;
     }
-
     selectedProductsContainer.innerHTML = Array.from(selectedProducts).map(product => `
-      <span class="badge bg-primary fs-6 m-1 p-2 product-tag" data-product-name="${product}">
+      <span class="badge bg-primary fs-6 m-1 p-2 product-tag" data-product-name="${product}" data-list="selected">
+        ${product}
+        <i class="bi bi-x-circle ms-1"></i>
+      </span>
+    `).join('');
+  }
+
+  function renderExcludedProducts() {
+    if (excludedProducts.size === 0) {
+      excludedProductsContainer.innerHTML = '<div class="text-muted p-3 text-center">點擊或拖曳商品至此處以排除</div>';
+      return;
+    }
+    excludedProductsContainer.innerHTML = Array.from(excludedProducts).map(product => `
+      <span class="badge bg-danger fs-6 m-1 p-2 product-tag" data-product-name="${product}" data-list="excluded">
         ${product}
         <i class="bi bi-x-circle ms-1"></i>
       </span>
@@ -87,7 +109,7 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function renderResults(results) {
-    allSearchResults = results; // Store results globally
+    allSearchResults = results;
     searchResultsContainer.innerHTML = '';
     const { woo_orders, sell_orders } = results;
 
@@ -114,7 +136,6 @@ document.addEventListener('DOMContentLoaded', () => {
           <tbody>
     `;
 
-    // Render WooCommerce Orders
     (woo_orders || []).forEach(order => {
       const shippingMethod = order.shipping_lines && order.shipping_lines.length > 0 ? order.shipping_lines[0].method_title : 'N/A';
       const orderDate = new Date(order.date_created);
@@ -132,7 +153,6 @@ document.addEventListener('DOMContentLoaded', () => {
       `;
     });
 
-    // Render Sell Orders
     (sell_orders || []).forEach(order => {
       const orderDate = new Date(order.ordered_at);
       html += `
@@ -149,11 +169,7 @@ document.addEventListener('DOMContentLoaded', () => {
       `;
     });
 
-    html += `
-          </tbody>
-        </table>
-      </div>
-    `;
+    html += `</tbody></table></div>`;
     searchResultsContainer.innerHTML = html;
   }
 
@@ -162,9 +178,18 @@ document.addEventListener('DOMContentLoaded', () => {
     const productItem = e.target.closest('.product-item');
     if (productItem) {
       const productName = productItem.dataset.productName;
+      const clickMode = document.querySelector('input[name="click-mode"]:checked').value;
+
       if (productName) {
-        selectedProducts.add(productName);
+        if (clickMode === 'add') {
+          excludedProducts.delete(productName);
+          selectedProducts.add(productName);
+        } else {
+          selectedProducts.delete(productName);
+          excludedProducts.add(productName);
+        }
         renderSelectedProducts();
+        renderExcludedProducts();
       }
     }
   }
@@ -179,27 +204,45 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function handleDragOver(e) {
     e.preventDefault();
-    selectedProductsContainer.classList.add('bg-secondary-subtle');
+    e.currentTarget.classList.add('bg-secondary-subtle');
   }
   
   function handleDragLeave(e) {
-    selectedProductsContainer.classList.remove('bg-secondary-subtle');
+    e.currentTarget.classList.remove('bg-secondary-subtle');
   }
 
-  function handleDrop(e) {
+  function handleDropSelected(e) {
     e.preventDefault();
-    selectedProductsContainer.classList.remove('bg-secondary-subtle');
+    e.currentTarget.classList.remove('bg-secondary-subtle');
     const productName = e.dataTransfer.getData('text/plain');
-    
     if (productName) {
+      excludedProducts.delete(productName);
       selectedProducts.add(productName);
       renderSelectedProducts();
+      renderExcludedProducts();
     }
-    
-    // Reset opacity on original item
-    const originalElement = allProductsContainer.querySelector(`[data-product-name="${productName}"]`);
-    if (originalElement) {
-      originalElement.style.opacity = '1';
+    resetDragState();
+  }
+
+  function handleDropExcluded(e) {
+    e.preventDefault();
+    e.currentTarget.classList.remove('bg-secondary-subtle');
+    const productName = e.dataTransfer.getData('text/plain');
+    if (productName) {
+      selectedProducts.delete(productName);
+      excludedProducts.add(productName);
+      renderSelectedProducts();
+      renderExcludedProducts();
+    }
+    resetDragState();
+  }
+
+  function resetDragState() {
+    if (draggedProduct) {
+      const originalElement = allProductsContainer.querySelector(`[data-product-name="${draggedProduct}"]`);
+      if (originalElement) {
+        originalElement.style.opacity = '1';
+      }
     }
     draggedProduct = null;
   }
@@ -208,25 +251,38 @@ document.addEventListener('DOMContentLoaded', () => {
     const target = e.target.closest('.product-tag');
     if (target) {
       const productName = target.dataset.productName;
-      selectedProducts.delete(productName);
-      renderSelectedProducts();
+      const list = target.dataset.list;
+      if (list === 'selected') {
+        selectedProducts.delete(productName);
+        renderSelectedProducts();
+      } else if (list === 'excluded') {
+        excludedProducts.delete(productName);
+        renderExcludedProducts();
+      }
     }
   }
 
   async function handleSearch() {
     const productNames = Array.from(selectedProducts);
-    if (productNames.length === 0) {
-      alert('請至少選擇一個商品');
+    const excludedProductNames = Array.from(excludedProducts);
+
+    if (productNames.length === 0 && searchModeSelect.value !== 'excludes') {
+      alert('請至少選擇一個搜尋商品');
+      return;
+    }
+     if (productNames.length === 0 && searchModeSelect.value === 'excludes' && excludedProductNames.length === 0) {
+      alert('請至少選擇一個搜尋商品或排除商品');
       return;
     }
 
     const payload = {
       product_names: productNames,
       mode: searchModeSelect.value,
+      excluded_product_names: excludedProductNames,
     };
 
     searchBtn.disabled = true;
-    searchBtn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> 搜尋中...';
+    searchBtn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> 搜尋中...';
 
     try {
       const response = await fetch('/api/orders/search-by-products', {
