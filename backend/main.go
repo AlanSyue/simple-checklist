@@ -765,6 +765,88 @@ func getMappedProductName(db *gorm.DB, originalName string, source string) strin
 	return originalName
 }
 
+// --- Structs and functions for Product Search ---
+
+type ProductSearchRequest struct {
+	ProductNames []string `json:"product_names"`
+	Mode         string   `json:"mode"` // "contains", "exact", "excludes"
+}
+
+// matchesProductCriteria is the core logic for matching products.
+func matchesProductCriteria(orderProductSet map[string]bool, requiredProducts []string, mode string) bool {
+	requiredProductSet := make(map[string]bool)
+	for _, p := range requiredProducts {
+		requiredProductSet[p] = true
+	}
+
+	if len(requiredProducts) == 0 {
+		return true // No criteria means all orders match
+	}
+
+	switch mode {
+	case "contains":
+		for reqProduct := range requiredProductSet {
+			if !orderProductSet[reqProduct] {
+				return false // Must contain all required products
+			}
+		}
+		return true
+	case "exact":
+		if len(orderProductSet) != len(requiredProductSet) {
+			return false // Must have the exact same number of unique products
+		}
+		for reqProduct := range requiredProductSet {
+			if !orderProductSet[reqProduct] {
+				return false // And all required products must be present
+			}
+		}
+		return true
+	case "excludes":
+		for reqProduct := range requiredProductSet {
+			if orderProductSet[reqProduct] {
+				return false // Must not contain any of the required products
+			}
+		}
+		return true
+	default:
+		return false
+	}
+}
+
+func filterWooOrdersByProducts(db *gorm.DB, orders []WooOrder, req ProductSearchRequest) []WooOrder {
+	matchedOrders := make([]WooOrder, 0)
+
+	for _, order := range orders {
+		orderProductNames := make(map[string]bool)
+		for _, item := range order.LineItems {
+			mappedName := getMappedProductName(db, item.Name, "woocommerce")
+			orderProductNames[mappedName] = true
+		}
+
+		if matchesProductCriteria(orderProductNames, req.ProductNames, req.Mode) {
+			matchedOrders = append(matchedOrders, order)
+		}
+	}
+	return matchedOrders
+}
+
+func filterSellOrdersByProducts(db *gorm.DB, summaries []UploadedOrderSummary, req ProductSearchRequest) []UploadedOrderSummary {
+	matchedSummaries := make([]UploadedOrderSummary, 0)
+
+	for _, summary := range summaries {
+		orderProductNames := make(map[string]bool)
+		for _, item := range summary.Items {
+			mappedName := getMappedProductName(db, item.ProductName, "sell")
+			orderProductNames[mappedName] = true
+		}
+
+		if matchesProductCriteria(orderProductNames, req.ProductNames, req.Mode) {
+			matchedSummaries = append(matchedSummaries, summary)
+		}
+	}
+	return matchedSummaries
+}
+
 func main() {
 	// --- Database Connection ---
 	dsn := fmt.Sprintf("host=postgres user=%s password=%s dbname=%s port=5432 sslmode=disable",
@@ -799,6 +881,77 @@ func main() {
 		c.File(filepath)
 	}
 
+	// Helper function to filter WooOrders by date
+	filterWooOrdersByDate := func(orders []WooOrder, startDateStr, endDateStr string) []WooOrder {
+		if startDateStr == "" && endDateStr == "" {
+			return orders
+		}
+
+		var filtered []WooOrder
+		for _, order := range orders {
+			dateMatch := true
+			orderDate, err := time.Parse("2006-01-02T15:04:05", order.DateCreated)
+			if err != nil {
+				// Try parsing with other formats if needed
+			} else {
+				if startDateStr != "" {
+					startDate, err := time.Parse("2006-01-02", startDateStr)
+					if err == nil {
+						if orderDate.Before(startDate) {
+							dateMatch = false
+						}
+					}
+				}
+				if endDateStr != "" && dateMatch {
+					endDate, err := time.Parse("2006-01-02", endDateStr)
+					if err == nil {
+						endDate = endDate.Add(24 * time.Hour)
+						if orderDate.After(endDate) {
+							dateMatch = false
+						}
+					}
+				}
+			}
+			if dateMatch {
+				filtered = append(filtered, order)
+			}
+		}
+		return filtered
+	}
+
+	// Helper function to filter UploadedOrders by date
+	filterUploadedOrdersByDate := func(orders []UploadedOrder, startDateStr, endDateStr string) []UploadedOrder {
+		if startDateStr == "" && endDateStr == "" {
+			return orders
+		}
+
+		var filtered []UploadedOrder
+		for _, order := range orders {
+			dateMatch := true
+			if startDateStr != "" {
+				startDate, err := time.Parse("2006-01-02", startDateStr)
+				if err == nil {
+					if order.OrderedAt.Before(startDate) {
+						dateMatch = false
+					}
+				}
+			}
+			if endDateStr != "" && dateMatch {
+				endDate, err := time.Parse("2006-01-02", endDateStr)
+				if err == nil {
+					endDate = endDate.Add(24 * time.Hour)
+					if order.OrderedAt.After(endDate) {
+						dateMatch = false
+					}
+				}
+			}
+			if dateMatch {
+				filtered = append(filtered, order)
+			}
+		}
+		return filtered
+	}
+
 	r.GET("/", func(c *gin.Context) {
 		serveHTML(c, "./frontend/index.html")
 	})
@@ -825,6 +978,9 @@ func main() {
 	})
 	r.GET("/combined-picking.html", func(c *gin.Context) {
 		serveHTML(c, "./frontend/combined-picking.html")
+	})
+	r.GET("/product-order-search.html", func(c *gin.Context) {
+		serveHTML(c, "./frontend/product-order-search.html")
 	})
 	r.POST("/orders/upload", func(c *gin.Context) {
 		file, err := c.FormFile("file")
@@ -917,7 +1073,11 @@ func main() {
 			return
 		}
 
-		c.JSON(http.StatusOK, buildUploadedOrderSummaries(stored))
+		startDate := c.Query("start_date")
+		endDate := c.Query("end_date")
+		filtered := filterUploadedOrdersByDate(stored, startDate, endDate)
+
+		c.JSON(http.StatusOK, buildUploadedOrderSummaries(filtered))
 	})
 
 	r.GET("/orders/picking", func(c *gin.Context) {
@@ -926,7 +1086,12 @@ func main() {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
-		c.JSON(http.StatusOK, buildProductPicking(db, stored))
+
+		startDate := c.Query("start_date")
+		endDate := c.Query("end_date")
+		filtered := filterUploadedOrdersByDate(stored, startDate, endDate)
+
+		c.JSON(http.StatusOK, buildProductPicking(db, filtered))
 	})
 
 	r.GET("/orders/uploaded/last", func(c *gin.Context) {
@@ -1099,7 +1264,41 @@ func main() {
 				customerNoteMatch = order.CustomerNote != ""
 			}
 
-			if tagMatch && remarkMatch && customerNoteMatch {
+			// Apply date range filter
+			dateMatch := true
+			startDateStr := c.Query("start_date")
+			endDateStr := c.Query("end_date")
+
+			if startDateStr != "" || endDateStr != "" {
+				orderDate, err := time.Parse("2006-01-02T15:04:05", order.DateCreated)
+				if err != nil {
+					// Try parsing with other formats if needed, or log error
+					// For now, assume standard WooCommerce format or skip if parse fails
+					// log.Printf("Error parsing date for order %d: %v", order.ID, err)
+				} else {
+					if startDateStr != "" {
+						startDate, err := time.Parse("2006-01-02", startDateStr)
+						if err == nil {
+							// Start of the day
+							if orderDate.Before(startDate) {
+								dateMatch = false
+							}
+						}
+					}
+					if endDateStr != "" && dateMatch {
+						endDate, err := time.Parse("2006-01-02", endDateStr)
+						if err == nil {
+							// End of the day (add 24 hours)
+							endDate = endDate.Add(24 * time.Hour)
+							if orderDate.After(endDate) {
+								dateMatch = false
+							}
+						}
+					}
+				}
+			}
+
+			if tagMatch && remarkMatch && customerNoteMatch && dateMatch {
 				filteredWooOrders = append(filteredWooOrders, order)
 			}
 		}
@@ -1211,6 +1410,39 @@ func main() {
 		c.JSON(http.StatusOK, orders)
 	})
 
+
+	// Route for searching orders by products
+	api.POST("/orders/search-by-products", func(c *gin.Context) {
+		var req ProductSearchRequest
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+			return
+		}
+
+		// Fetch all necessary data
+		wooOrders, err := fetchProcessingOrders()
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch WooCommerce orders: " + err.Error()})
+			return
+		}
+
+		var sellOrderRows []UploadedOrder
+		if err := db.Order("ordered_at desc, id desc").Find(&sellOrderRows).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch sell orders: " + err.Error()})
+			return
+		}
+		sellOrderSummaries := buildUploadedOrderSummaries(sellOrderRows)
+
+		// Filter orders
+		matchedWooOrders := filterWooOrdersByProducts(db, wooOrders, req)
+		matchedSellOrders := filterSellOrdersByProducts(db, sellOrderSummaries, req)
+
+		c.JSON(http.StatusOK, gin.H{
+			"woo_orders":  matchedWooOrders,
+			"sell_orders": matchedSellOrders,
+		})
+	})
+
 	api.GET("/picking-list", func(c *gin.Context) {
 		orders, err := fetchProcessingOrders()
 		if err != nil {
@@ -1218,7 +1450,11 @@ func main() {
 			return
 		}
 
-		pickingList := generatePickingList(db, orders)
+		startDate := c.Query("start_date")
+		endDate := c.Query("end_date")
+		filtered := filterWooOrdersByDate(orders, startDate, endDate)
+
+		pickingList := generatePickingList(db, filtered)
 		c.JSON(http.StatusOK, pickingList)
 	})
 
@@ -1237,8 +1473,14 @@ func main() {
 			return
 		}
 
+		startDate := c.Query("start_date")
+		endDate := c.Query("end_date")
+
+		filteredWoo := filterWooOrdersByDate(wooOrders, startDate, endDate)
+		filteredSell := filterUploadedOrdersByDate(sellOrders, startDate, endDate)
+
 		// Build combined picking list
-		combinedList := buildCombinedPickingList(db, wooOrders, sellOrders)
+		combinedList := buildCombinedPickingList(db, filteredWoo, filteredSell)
 		c.JSON(http.StatusOK, combinedList)
 	})
 

@@ -17,6 +17,16 @@
       </div>
       <div class="card-body">
         <p class="text-muted small">資料由已上傳的賣貨便訂單報表聚合而成，按商品列出總數量與涉及的訂單編號。</p>
+        <div class="row mb-3">
+          <div class="col-md-6">
+            <div class="input-group">
+              <span class="input-group-text">日期</span>
+              <input type="date" class="form-control" id="start-date-filter" placeholder="開始日期">
+              <span class="input-group-text">至</span>
+              <input type="date" class="form-control" id="end-date-filter" placeholder="結束日期">
+            </div>
+          </div>
+        </div>
         <p id="sell-picking-last-upload" class="text-muted small mb-3">最後上傳：尚未上傳</p>
         <div class="table-responsive">
           <table class="table table-hover table-sm align-middle">

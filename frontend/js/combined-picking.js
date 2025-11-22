@@ -1,13 +1,27 @@
-// Store the full picking list for filtering
 let fullPickingList = [];
 let currentFilteredList = [];
+let startDateFilter = "";
+let endDateFilter = "";
 
 async function loadCombinedPickingList() {
   const loadingMessage = document.getElementById("loading-message");
   const pickingContent = document.getElementById("picking-content");
 
   try {
-    const res = await fetch("/api/combined-picking-list");
+    let url = "/api/combined-picking-list";
+    const params = new URLSearchParams();
+    if (startDateFilter) {
+      params.append('start_date', startDateFilter);
+    }
+    if (endDateFilter) {
+      params.append('end_date', endDateFilter);
+    }
+
+    if (params.toString()) {
+      url += '?' + params.toString();
+    }
+
+    const res = await fetch(url);
 
     if (!res.ok) {
       const errorText = await res.text().catch(() => res.statusText);
@@ -127,5 +141,23 @@ function renderCombinedPickingList(pickingList) {
 
 // Load the combined picking list when page loads
 document.addEventListener("DOMContentLoaded", () => {
+  // Initialize date filters
+  const startDateInput = document.getElementById('start-date-filter');
+  const endDateInput = document.getElementById('end-date-filter');
+
+  if (startDateInput) {
+    startDateInput.addEventListener('change', (event) => {
+      startDateFilter = event.target.value;
+      loadCombinedPickingList();
+    });
+  }
+
+  if (endDateInput) {
+    endDateInput.addEventListener('change', (event) => {
+      endDateFilter = event.target.value;
+      loadCombinedPickingList();
+    });
+  }
+
   loadCombinedPickingList();
 });

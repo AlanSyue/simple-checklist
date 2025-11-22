@@ -5,8 +5,28 @@ const lastUploadElementId = "sell-picking-last-upload";
 
 let aggregatedOrdersCache = [];
 let relatedPickingItems = [];
+let startDateFilter = "";
+let endDateFilter = "";
 
 document.addEventListener("DOMContentLoaded", () => {
+  // Initialize date filters
+  const startDateInput = document.getElementById('start-date-filter');
+  const endDateInput = document.getElementById('end-date-filter');
+
+  if (startDateInput) {
+    startDateInput.addEventListener('change', (event) => {
+      startDateFilter = event.target.value;
+      fetchSellPicking();
+    });
+  }
+
+  if (endDateInput) {
+    endDateInput.addEventListener('change', (event) => {
+      endDateFilter = event.target.value;
+      fetchSellPicking();
+    });
+  }
+
   fetchSellPicking();
   fetchAggregatedOrderSummary();
 });
@@ -16,7 +36,20 @@ async function fetchSellPicking() {
   if (!body) return;
 
   try {
-    const response = await fetch(sellPickingEndpoint);
+    let url = sellPickingEndpoint;
+    const params = new URLSearchParams();
+    if (startDateFilter) {
+      params.append('start_date', startDateFilter);
+    }
+    if (endDateFilter) {
+      params.append('end_date', endDateFilter);
+    }
+
+    if (params.toString()) {
+      url += '?' + params.toString();
+    }
+
+    const response = await fetch(url);
     if (!response.ok) {
       throw new Error(await response.text().catch(() => response.statusText));
     }

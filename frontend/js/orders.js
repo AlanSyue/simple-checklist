@@ -5,9 +5,11 @@ let selectedFilterTags = [];
 let showCompletedFilter = false;
 let showRemarkFilter = false;
 let showCustomerNoteFilter = false;
+let startDateFilter = "";
+let endDateFilter = "";
 let selectedOrderIds = new Set(); // Store selected order IDs for export
 
-document.addEventListener("DOMContentLoaded", function() {
+document.addEventListener("DOMContentLoaded", function () {
   detailModal = new bootstrap.Modal(document.getElementById('orderDetailModal'));
   loadOrders();
 
@@ -59,13 +61,31 @@ document.addEventListener("DOMContentLoaded", function() {
   if (selectAllCheckbox) {
     selectAllCheckbox.addEventListener('change', toggleSelectAll);
   }
+
+  // Initialize date filters
+  const startDateInput = document.getElementById('start-date-filter');
+  const endDateInput = document.getElementById('end-date-filter');
+
+  if (startDateInput) {
+    startDateInput.addEventListener('change', (event) => {
+      startDateFilter = event.target.value;
+      loadOrders();
+    });
+  }
+
+  if (endDateInput) {
+    endDateInput.addEventListener('change', (event) => {
+      endDateFilter = event.target.value;
+      loadOrders();
+    });
+  }
 });
 
 async function loadOrders() {
   try {
     let url = "/api/orders";
     const params = new URLSearchParams();
-    const hasFilters = selectedFilterTags.length > 0 || showRemarkFilter || showCustomerNoteFilter;
+    const hasFilters = selectedFilterTags.length > 0 || showRemarkFilter || showCustomerNoteFilter || startDateFilter || endDateFilter;
 
     if (selectedFilterTags.length > 0) {
       selectedFilterTags.forEach(tag => params.append('tags', tag));
@@ -75,6 +95,12 @@ async function loadOrders() {
     }
     if (showCustomerNoteFilter) {
       params.append('has_customer_note', 'true');
+    }
+    if (startDateFilter) {
+      params.append('start_date', startDateFilter);
+    }
+    if (endDateFilter) {
+      params.append('end_date', endDateFilter);
     }
 
     if (params.toString()) {

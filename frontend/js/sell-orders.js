@@ -12,6 +12,8 @@ const selector = {
 
 let aggregatedOrdersCache = [];
 const lastUploadElementId = "sell-orders-last-upload";
+let startDateFilter = "";
+let endDateFilter = "";
 
 document.addEventListener("DOMContentLoaded", () => {
   const form = document.getElementById(selector.uploadForm);
@@ -22,6 +24,24 @@ document.addEventListener("DOMContentLoaded", () => {
   const clearBtn = document.getElementById("clear-orders-btn");
   if (clearBtn) {
     clearBtn.addEventListener("click", handleClearOrders);
+  }
+
+  // Initialize date filters
+  const startDateInput = document.getElementById('start-date-filter');
+  const endDateInput = document.getElementById('end-date-filter');
+
+  if (startDateInput) {
+    startDateInput.addEventListener('change', (event) => {
+      startDateFilter = event.target.value;
+      fetchAggregatedOrders();
+    });
+  }
+
+  if (endDateInput) {
+    endDateInput.addEventListener('change', (event) => {
+      endDateFilter = event.target.value;
+      fetchAggregatedOrders();
+    });
   }
 
   fetchAggregatedOrders();
@@ -98,7 +118,20 @@ async function fetchAggregatedOrders() {
   }
 
   try {
-    const response = await fetch(aggregatedOrdersEndpoint);
+    let url = aggregatedOrdersEndpoint;
+    const params = new URLSearchParams();
+    if (startDateFilter) {
+      params.append('start_date', startDateFilter);
+    }
+    if (endDateFilter) {
+      params.append('end_date', endDateFilter);
+    }
+
+    if (params.toString()) {
+      url += '?' + params.toString();
+    }
+
+    const response = await fetch(url);
     if (!response.ok) {
       const message = await response.text().catch(() => response.statusText);
       throw new Error(message || "無法取得已上傳資料");

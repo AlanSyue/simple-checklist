@@ -1,6 +1,44 @@
+let startDateFilter = "";
+let endDateFilter = "";
+
+document.addEventListener("DOMContentLoaded", function () {
+  // Initialize date filters
+  const startDateInput = document.getElementById('start-date-filter');
+  const endDateInput = document.getElementById('end-date-filter');
+
+  if (startDateInput) {
+    startDateInput.addEventListener('change', (event) => {
+      startDateFilter = event.target.value;
+      loadPickingList();
+    });
+  }
+
+  if (endDateInput) {
+    endDateInput.addEventListener('change', (event) => {
+      endDateFilter = event.target.value;
+      loadPickingList();
+    });
+  }
+
+  loadPickingList();
+});
+
 async function loadPickingList() {
   try {
-    const res = await fetch("/api/picking-list");
+    let url = "/api/picking-list";
+    const params = new URLSearchParams();
+    if (startDateFilter) {
+      params.append('start_date', startDateFilter);
+    }
+    if (endDateFilter) {
+      params.append('end_date', endDateFilter);
+    }
+
+    if (params.toString()) {
+      url += '?' + params.toString();
+    }
+
+    const res = await fetch(url);
     const pickingList = await res.json();
     renderPickingList(pickingList);
   } catch (error) {
@@ -12,7 +50,7 @@ async function loadPickingList() {
 function renderPickingList(pickingList) {
   const list = document.getElementById("picking-list");
   list.innerHTML = "";
-   if (!pickingList || pickingList.length === 0) {
+  if (!pickingList || pickingList.length === 0) {
     list.innerHTML = `<tr><td colspan="3" class="text-center text-muted py-4">沒有需要揀貨的商品</td></tr>`;
     return;
   }
@@ -28,4 +66,4 @@ function renderPickingList(pickingList) {
   });
 }
 
-loadPickingList();
+
