@@ -787,11 +787,11 @@ func matchesProductCriteria(orderProductSet map[string]bool, requiredProducts []
 	switch mode {
 	case "contains":
 		for reqProduct := range requiredProductSet {
-			if !orderProductSet[reqProduct] {
-				return false // Must contain all required products
+			if orderProductSet[reqProduct] {
+				return true // OR logic: return true if any product matches
 			}
 		}
-		return true
+		return false // If loop completes, no matches were found
 	case "exact":
 		if len(orderProductSet) != len(requiredProductSet) {
 			return false // Must have the exact same number of unique products
