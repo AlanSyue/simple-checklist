@@ -1665,37 +1665,56 @@ func generatePickingList(db *gorm.DB, orders []WooOrder) []PickingListItem {
 }
 
 func fetchProcessingOrders() ([]WooOrder, error) {
-	// ... (rest of the file is the same)
+	var allOrders []WooOrder
+	page := 1
+	perPage := 100
 
-	url := "https://flowers.fenny-studio.com/wp-json/wc/v3/orders?status=processing&per_page=100"
+	for {
+		url := fmt.Sprintf("https://flowers.fenny-studio.com/wp-json/wc/v3/orders?status=processing&per_page=%d&page=%d", perPage, page)
 
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		return nil, fmt.Errorf("error creating request: %w", err)
+		req, err := http.NewRequest("GET", url, nil)
+		if err != nil {
+			return nil, fmt.Errorf("error creating request: %w", err)
+		}
+
+		apiKey := os.Getenv("WOO_API_KEY")
+		apiSecret := os.Getenv("WOO_API_SECRET")
+		req.SetBasicAuth(apiKey, apiSecret)
+
+		client := &http.Client{}
+		resp, err := client.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("error performing request: %w", err)
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			bodyBytes, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			return nil, fmt.Errorf("received non-200 status code: %d - %s", resp.StatusCode, string(bodyBytes))
+		}
+
+		var orders []WooOrder
+		if err := json.NewDecoder(resp.Body).Decode(&orders); err != nil {
+			resp.Body.Close()
+			return nil, fmt.Errorf("error decoding response: %w", err)
+		}
+		resp.Body.Close()
+
+		// 將這一頁的訂單加入總列表
+		allOrders = append(allOrders, orders...)
+
+		log.Printf("已取得第 %d 頁，共 %d 筆訂單（本頁 %d 筆）", page, len(allOrders), len(orders))
+
+		// 如果這頁的訂單數少於 per_page，表示已經是最後一頁
+		if len(orders) < perPage {
+			break
+		}
+
+		page++
 	}
 
-	apiKey := os.Getenv("WOO_API_KEY")
-	apiSecret := os.Getenv("WOO_API_SECRET")
-	req.SetBasicAuth(apiKey, apiSecret)
-
-	client := &http.Client{}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("error performing request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		bodyBytes, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("received non-200 status code: %d - %s", resp.StatusCode, string(bodyBytes))
-	}
-
-	var orders []WooOrder
-	if err := json.NewDecoder(resp.Body).Decode(&orders); err != nil {
-		return nil, fmt.Errorf("error decoding response: %w", err)
-	}
-
-	return orders, nil
+	log.Printf("總共取得 %d 筆 processing 訂單", len(allOrders))
+	return allOrders, nil
 }
 
 func fetchSingleOrder(orderID int) (WooOrder, error) {
