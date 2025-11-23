@@ -173,6 +173,9 @@ function renderAggregatedOrders(orders) {
   }
 
   orders.forEach((order, index) => {
+    // Extract note from first item that has a note
+    const note = (order.items || []).find(item => item.note && item.note.trim() !== "")?.note || "";
+
     const row = document.createElement("tr");
     row.innerHTML = `
       <td>${order.order_no || "-"}</td>
@@ -181,6 +184,7 @@ function renderAggregatedOrders(orders) {
       <td>${order.address || "-"}</td>
       <td class="text-end">${formatNumber(order.total_qty, 0)}</td>
       <td class="text-end">${formatNumber(order.total_amount, 0)}</td>
+      <td>${note}</td>
       <td class="text-center">
         <button class="btn btn-sm btn-outline-primary" type="button" onclick="showUploadedOrderDetail(${index})">
           <i class="bi bi-card-text me-1"></i>明細
