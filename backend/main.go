@@ -91,6 +91,7 @@ type WooOrder struct {
 	ShippingLines      []ShippingLine `json:"shipping_lines"`
 	PaymentMethodTitle string         `json:"payment_method_title"`
 	OrderMetadata      OrderMetadata  `json:"order_metadata" gorm:"-"`
+	CVSStoreName       string         `json:"cvs_store_name" gorm:"-"`
 }
 
 type BillingInfo struct {
@@ -543,6 +544,17 @@ func buildUploadedOrderSummaries(rows []UploadedOrder) []UploadedOrderSummary {
 	})
 
 	return summaries
+}
+
+func getCVSStoreName(order *WooOrder) string {
+	for _, meta := range order.MetaData {
+		if meta.Key == "_shipping_cvs_store_name" {
+			if str, ok := meta.Value.(string); ok {
+				return str
+			}
+		}
+	}
+	return ""
 }
 
 func buildProductPicking(db *gorm.DB, rows []UploadedOrder) []ProductPickingItem {
@@ -1288,6 +1300,7 @@ func main() {
 				metadata = newMeta
 			}
 			order.OrderMetadata = metadata
+			order.CVSStoreName = getCVSStoreName(&order)
 
 			// Apply tag filtering (OR logic - match any of the requested tags)
 			tagMatch := true
@@ -1408,6 +1421,7 @@ func main() {
 			db.Create(&metadata)
 		}
 		wooOrder.OrderMetadata = metadata
+		wooOrder.CVSStoreName = getCVSStoreName(&wooOrder)
 
 		c.JSON(http.StatusOK, wooOrder)
 	})
@@ -1460,11 +1474,11 @@ func main() {
 				db.Create(&newMeta)
 				orders[i].OrderMetadata = newMeta
 			}
+			orders[i].CVSStoreName = getCVSStoreName(&orders[i])
 		}
 
 		c.JSON(http.StatusOK, orders)
 	})
-
 
 	// Route for searching orders by products
 	api.POST("/orders/search-by-products", func(c *gin.Context) {

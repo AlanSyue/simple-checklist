@@ -123,11 +123,83 @@ document.addEventListener('DOMContentLoaded', () => {
   function renderResults(results) {
     allSearchResults = results;
     searchResultsContainer.innerHTML = '';
+    const productSummaryContainer = document.getElementById('product-summary');
     const { woo_orders, sell_orders } = results;
 
     if (!woo_orders?.length && !sell_orders?.length) {
       searchResultsContainer.innerHTML = '<div class="alert alert-warning">找不到符合條件的訂單。</div>';
+      productSummaryContainer.innerHTML = '';
       return;
+    }
+
+    // Build product summary
+    const productMap = new Map();
+
+    // Count products from WooCommerce orders
+    (woo_orders || []).forEach(order => {
+      (order.line_items || []).forEach(item => {
+        const productName = item.name;
+        const quantity = item.quantity || 0;
+        if (productMap.has(productName)) {
+          productMap.set(productName, productMap.get(productName) + quantity);
+        } else {
+          productMap.set(productName, quantity);
+        }
+      });
+    });
+
+    // Count products from Sell orders
+    (sell_orders || []).forEach(order => {
+      (order.items || []).forEach(item => {
+        const productName = item.product_name;
+        const quantity = item.qty || 0;
+        if (productMap.has(productName)) {
+          productMap.set(productName, productMap.get(productName) + quantity);
+        } else {
+          productMap.set(productName, quantity);
+        }
+      });
+    });
+
+    // Render product summary table
+    if (productMap.size > 0) {
+      const sortedProducts = Array.from(productMap.entries()).sort((a, b) => a[0].localeCompare(b[0]));
+      let summaryHtml = `
+        <div class="card">
+          <div class="card-header bg-success text-white">
+            <h5 class="mb-0"><i class="bi bi-box-seam me-2"></i>商品統計</h5>
+          </div>
+          <div class="card-body">
+            <div class="table-responsive">
+              <table class="table table-striped table-hover">
+                <thead>
+                  <tr>
+                    <th>商品名稱</th>
+                    <th class="text-end">數量</th>
+                  </tr>
+                </thead>
+                <tbody>
+      `;
+
+      sortedProducts.forEach(([productName, quantity]) => {
+        summaryHtml += `
+          <tr>
+            <td>${productName}</td>
+            <td class="text-end"><strong>${quantity}</strong></td>
+          </tr>
+        `;
+      });
+
+      summaryHtml += `
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      `;
+      productSummaryContainer.innerHTML = summaryHtml;
+    } else {
+      productSummaryContainer.innerHTML = '';
     }
 
     // Combine and normalize orders
@@ -142,6 +214,7 @@ document.addEventListener('DOMContentLoaded', () => {
         orderNo: order.id,
         name: order.shipping.first_name,
         shippingMethod: shippingMethod,
+        cvsStoreName: order.cvs_store_name || '',
         amount: order.total,
         orderTime: new Date(order.date_created),
         orderTimeStr: order.date_created,
@@ -158,6 +231,7 @@ document.addEventListener('DOMContentLoaded', () => {
         orderNo: order.order_no,
         name: order.receiver_name,
         shippingMethod: '7-ELEVEN',
+        cvsStoreName: '',
         amount: order.total_amount,
         orderTime: new Date(order.ordered_at),
         orderTimeStr: order.ordered_at,
@@ -177,6 +251,7 @@ document.addEventListener('DOMContentLoaded', () => {
               <th>訂單編號</th>
               <th>姓名</th>
               <th>出貨方式</th>
+              <th>取貨門市</th>
               <th>金額</th>
               <th>訂購時間</th>
               <th>客戶備註</th>
@@ -197,6 +272,7 @@ document.addEventListener('DOMContentLoaded', () => {
           <td>${order.orderNo}</td>
           <td>${order.name}</td>
           <td>${order.shippingMethod}</td>
+          <td>${order.cvsStoreName}</td>
           <td>${order.amount}</td>
           <td>${formatDateTime(order.orderTimeStr)}</td>
           <td>${order.note}</td>
@@ -362,6 +438,7 @@ document.addEventListener('DOMContentLoaded', () => {
     let detailHtml = '';
     if (source === 'woo') {
       const shippingMethod = order.shipping_lines && order.shipping_lines.length > 0 ? order.shipping_lines[0].method_title : 'N/A';
+      const cvsStoreName = order.cvs_store_name || '';
       const productsHtml = (order.line_items || []).map(item => `<li>${item.name} (x${item.quantity}) - $${item.total}</li>`).join('');
       detailHtml = `
         <p><strong>訂單 ID:</strong> ${order.id}</p>
@@ -372,6 +449,7 @@ document.addEventListener('DOMContentLoaded', () => {
         <p><strong>總金額:</strong> ${order.total}</p>
         <p><strong>付款方式:</strong> ${order.payment_method_title}</p>
         <p><strong>出貨方式:</strong> ${shippingMethod}</p>
+        ${cvsStoreName ? `<p><strong>取貨門市:</strong> ${cvsStoreName}</p>` : ''}
         <p><strong>客戶備註:</strong> ${order.customer_note || '無'}</p>
         <h6>商品列表:</h6>
         <ul>${productsHtml}</ul>

@@ -145,6 +145,12 @@ function createOrderSection(order, index) {
       <div class="order-info-label">出貨方式：</div>
       <div>${shippingMethod}</div>
     </div>
+    ${order.cvs_store_name ? `
+    <div class="order-info-row">
+      <div class="order-info-label">取貨門市：</div>
+      <div>${order.cvs_store_name}</div>
+    </div>
+    ` : ''}
     ${pickupNumber ? `
     <div class="order-info-row">
       <div class="order-info-label">取貨單號：</div>

@@ -221,13 +221,14 @@ function renderOrders() {
   });
 
   if (!filteredOrders || filteredOrders.length === 0) {
-    list.innerHTML = `<tr><td colspan="10" class="text-center text-muted py-4">沒有符合條件的訂單</td></tr>`;
+    list.innerHTML = `<tr><td colspan="12" class="text-center text-muted py-4">沒有符合條件的訂單</td></tr>`;
     return;
   }
 
   filteredOrders.forEach(order => {
     const row = document.createElement("tr");
     const shippingMethod = order.shipping_lines && order.shipping_lines.length > 0 ? order.shipping_lines[0].method_title : 'N/A';
+    const cvsStoreName = order.cvs_store_name || '';
     const isSelected = selectedOrderIds.has(order.id);
 
     row.innerHTML = `
@@ -237,6 +238,7 @@ function renderOrders() {
       <td>${order.payment_method_title || 'N/A'}</td>
       <td>${order.total}</td>
       <td>${shippingMethod}</td>
+      <td>${cvsStoreName}</td>
       <td>${order.customer_note || ''}</td>
       <td><input type="text" class="form-control form-control-sm remark-input" value="${order.order_metadata.remark || ''}" onchange="updateOrderMetadata(${order.id})"></td>
       <td class="tag-cell" id="tags-${order.id}"></td>
