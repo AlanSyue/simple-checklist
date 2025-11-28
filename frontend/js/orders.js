@@ -220,8 +220,15 @@ function renderOrders() {
     return completedMatch;
   });
 
+  // Sort by date_created ascending
+  filteredOrders.sort((a, b) => {
+    const dateA = new Date(a.date_created);
+    const dateB = new Date(b.date_created);
+    return dateA - dateB;
+  });
+
   if (!filteredOrders || filteredOrders.length === 0) {
-    list.innerHTML = `<tr><td colspan="12" class="text-center text-muted py-4">沒有符合條件的訂單</td></tr>`;
+    list.innerHTML = `<tr><td colspan="13" class="text-center text-muted py-4">沒有符合條件的訂單</td></tr>`;
     return;
   }
 
@@ -231,9 +238,21 @@ function renderOrders() {
     const cvsStoreName = order.cvs_store_name || '';
     const isSelected = selectedOrderIds.has(order.id);
 
+    // Format date_created as YYYY-mm-dd HH:ii:ss
+    const dateCreated = order.date_created ? new Date(order.date_created).toLocaleString('zh-TW', {
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: false
+    }).replace(/\//g, '-') : 'N/A';
+
     row.innerHTML = `
       <td><input type="checkbox" class="form-check-input order-checkbox" data-order-id="${order.id}" ${isSelected ? 'checked' : ''} onchange="toggleOrderSelection(${order.id})"></td>
       <td><a href="#" onclick="showOrderDetails(${order.id}); return false;">${order.id}</a></td>
+      <td>${dateCreated}</td>
       <td>${order.shipping.first_name}</td>
       <td>${order.payment_method_title || 'N/A'}</td>
       <td>${order.total}</td>
