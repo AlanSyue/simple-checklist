@@ -45,6 +45,20 @@
           </div>
         </form>
         <p id="sell-orders-last-upload" class="text-muted small mb-3">最後上傳：尚未上傳</p>
+
+        <!-- Export Button Section -->
+        <div class="row mb-3">
+          <div class="col-md-12">
+            <button class="btn btn-primary" id="export-picking-list-btn" onclick="exportPickingList()">
+              <i class="bi bi-file-earmark-pdf me-2"></i>匯出揀貨單
+            </button>
+            <button class="btn btn-success ms-2" id="export-order-list-btn" onclick="exportOrderList()">
+              <i class="bi bi-table me-2"></i>匯出訂單列表
+            </button>
+            <span class="ms-2 text-muted" id="selected-count">已選擇 0 筆訂單</span>
+          </div>
+        </div>
+
         <div class="row mb-3">
           <div class="col-md-6">
             <div class="input-group">
@@ -60,6 +74,7 @@
           <table class="table table-hover table-sm align-middle">
             <thead class="table-light">
               <tr>
+                <th><input type="checkbox" class="form-check-input" id="select-all-checkbox"></th>
                 <th>訂單編號</th>
                 <th>訂購日期</th>
                 <th>收件人</th>
@@ -72,7 +87,7 @@
             </thead>
             <tbody id="uploaded-orders-body">
               <tr>
-                <td colspan="8" class="text-center text-muted">尚未取得資料</td>
+                <td colspan="9" class="text-center text-muted">尚未取得資料</td>
               </tr>
             </tbody>
           </table>

@@ -589,6 +589,84 @@ async function exportPickingList() {
   }
 }
 
+// 匯出訂單列表
+async function exportOrderList() {
+  if (selectedOrderIds.size === 0) {
+    showAlert("請至少選擇一筆訂單", "warning");
+    return;
+  }
+
+  const exportBtn = document.getElementById('export-order-list-btn');
+  const originalBtnHTML = exportBtn ? exportBtn.innerHTML : '';
+
+  // 先打開視窗（在用戶操作的同步上下文中）
+  const printWindow = window.open('order-list-print.html', '_blank');
+
+  if (!printWindow) {
+    showAlert("無法打開新視窗，請檢查瀏覽器的彈出視窗設定", "warning");
+    return;
+  }
+
+  try {
+    if (exportBtn) {
+      exportBtn.innerHTML = `<span class="spinner-border spinner-border-sm me-2"></span>載入訂單資料...`;
+      exportBtn.disabled = true;
+    }
+
+    // Get selected order IDs
+    const orderIds = Array.from(selectedOrderIds);
+
+    // 建立一個監聽器，等待新視窗載入完成
+    const loadPromise = new Promise((resolve) => {
+      if (printWindow.document.readyState === 'complete') {
+        resolve();
+      } else {
+        printWindow.addEventListener('load', resolve);
+      }
+    });
+
+    // 同時開始獲取訂單資料
+    const ordersPromise = fetchOrdersInBatches(orderIds, 50);
+
+    // 等待兩者都完成
+    const [, ordersWithDetails] = await Promise.all([loadPromise, ordersPromise]);
+
+    if (ordersWithDetails.length === 0) {
+      printWindow.close();
+      throw new Error('無法載入訂單資料');
+    }
+
+    // Sort orders by date_created ascending
+    ordersWithDetails.sort((a, b) => {
+      const dateA = new Date(a.date_created);
+      const dateB = new Date(b.date_created);
+      return dateA - dateB;
+    });
+
+    // 額外延遲確保事件監聽器已設置
+    await new Promise(resolve => setTimeout(resolve, 100));
+
+    // 通過 postMessage 將資料傳遞給新視窗
+    printWindow.postMessage({
+      type: 'orderListData',
+      orders: ordersWithDetails
+    }, window.location.origin);
+
+    showAlert(`已開啟訂單列表（${ordersWithDetails.length} 筆訂單）`, "success");
+  } catch (error) {
+    console.error("匯出訂單列表失敗:", error);
+    if (printWindow && !printWindow.closed) {
+      printWindow.close();
+    }
+    showAlert(`匯出訂單列表失敗：${error.message}`, "danger");
+  } finally {
+    if (exportBtn) {
+      exportBtn.disabled = false;
+      exportBtn.innerHTML = originalBtnHTML;
+    }
+  }
+}
+
 // 產生揀貨單 PDF
 function generatePickingListPDF(orders) {
   const { jsPDF } = window.jspdf;
