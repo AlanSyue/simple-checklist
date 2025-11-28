@@ -1035,6 +1035,15 @@ func main() {
 	r.GET("/picking-list-print.html", func(c *gin.Context) {
 		serveHTML(c, "./frontend/picking-list-print.html")
 	})
+	r.GET("/order-list-print.html", func(c *gin.Context) {
+		serveHTML(c, "./frontend/order-list-print.html")
+	})
+	r.GET("/sell-picking-list-print.html", func(c *gin.Context) {
+		serveHTML(c, "./frontend/sell-picking-list-print.html")
+	})
+	r.GET("/sell-order-list-print.html", func(c *gin.Context) {
+		serveHTML(c, "./frontend/sell-order-list-print.html")
+	})
 	r.GET("/sell-orders.html", func(c *gin.Context) {
 		serveHTML(c, "./frontend/sell-orders.html")
 	})

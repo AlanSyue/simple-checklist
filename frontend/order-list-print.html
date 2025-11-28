@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>訂單列表</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+  <style>
+    @media print {
+      .no-print {
+        display: none;
+      }
+      body {
+        print-color-adjust: exact;
+        -webkit-print-color-adjust: exact;
+      }
+      @page {
+        size: A4 landscape;
+        margin: 10mm;
+      }
+    }
+    body {
+      font-size: 12px;
+    }
+    .order-row {
+      border-bottom: 2px solid #000;
+    }
+    .product-row {
+      border-bottom: 1px solid #ddd;
+    }
+    .order-header {
+      background-color: #e9ecef;
+      font-weight: bold;
+    }
+    table {
+      font-size: 11px;
+    }
+    th {
+      font-size: 12px;
+      white-space: nowrap;
+    }
+  </style>
+</head>
+<body>
+  <div class="container-fluid py-3">
+    <div class="d-flex justify-content-between align-items-center mb-3 no-print">
+      <h3>訂單列表</h3>
+      <div>
+        <button class="btn btn-primary" onclick="window.print()">
+          <i class="bi bi-printer"></i> 列印
+        </button>
+        <button class="btn btn-secondary" onclick="window.close()">
+          關閉
+        </button>
+      </div>
+    </div>
+
+    <div id="order-list-container">
+      <p class="text-center">載入中...</p>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+  <script>
+    let orders = [];
+
+    // Listen for data from parent window
+    window.addEventListener('message', function(event) {
+      if (event.data.type === 'orderListData') {
+        orders = event.data.orders;
+        renderOrderList();
+      }
+    });
+
+    // Also check if opener exists and request data
+    if (window.opener && !window.opener.closed) {
+      // Data will be sent via postMessage
+    }
+
+    function renderOrderList() {
+      const container = document.getElementById('order-list-container');
+
+      if (!orders || orders.length === 0) {
+        container.innerHTML = '<p class="text-center text-muted">沒有訂單資料</p>';
+        return;
+      }
+
+      let html = `
+        <div class="mb-3">
+          <p><strong>匯出時間：</strong>${new Date().toLocaleString('zh-TW')}</p>
+          <p><strong>訂單數量：</strong>${orders.length} 筆</p>
+        </div>
+        <table class="table table-bordered table-sm">
+          <thead class="table-light">
+            <tr>
+              <th style="width: 30px;">☐</th>
+              <th>訂單 ID</th>
+              <th>建立訂單時間</th>
+              <th>訂購人</th>
+              <th>付款方式</th>
+              <th>金額</th>
+              <th>出貨方式</th>
+              <th>取貨門市</th>
+              <th>客戶備註</th>
+              <th>購買商品</th>
+              <th>數量</th>
+              <th>價格</th>
+              <th>小計</th>
+            </tr>
+          </thead>
+          <tbody>
+      `;
+
+      orders.forEach((order, orderIndex) => {
+        const items = order.line_items || [];
+        const rowspan = items.length || 1;
+
+        // Format order creation time (date only)
+        const dateCreated = order.date_created ? new Date(order.date_created).toLocaleDateString('zh-TW', {
+          year: 'numeric',
+          month: '2-digit',
+          day: '2-digit'
+        }).replace(/\//g, '-') : 'N/A';
+
+        // Get shipping method and CVS store name
+        const shippingMethod = order.shipping_lines && order.shipping_lines.length > 0 ? order.shipping_lines[0].method_title : 'N/A';
+        const cvsStoreName = order.cvs_store_name || '';
+
+        items.forEach((item, itemIndex) => {
+          const itemSubtotal = (item.price || 0) * (item.quantity || 0);
+
+          html += '<tr class="product-row">';
+
+          // Only show order info on first item
+          if (itemIndex === 0) {
+            // 勾選欄位
+            html += `<td rowspan="${rowspan}" class="align-middle text-center">☐</td>`;
+            // 訂單 ID
+            html += `<td rowspan="${rowspan}" class="order-header align-middle">${order.id}</td>`;
+            // 建立訂單時間
+            html += `<td rowspan="${rowspan}" class="align-middle">${dateCreated}</td>`;
+            // 訂購人
+            html += `<td rowspan="${rowspan}" class="align-middle">${order.shipping.first_name || 'N/A'}</td>`;
+            // 付款方式
+            html += `<td rowspan="${rowspan}" class="align-middle">${order.payment_method_title || 'N/A'}</td>`;
+            // 金額
+            html += `<td rowspan="${rowspan}" class="order-header align-middle text-end"><strong>${order.total || 0}</strong></td>`;
+            // 出貨方式
+            html += `<td rowspan="${rowspan}" class="align-middle">${shippingMethod}</td>`;
+            // 取貨門市
+            html += `<td rowspan="${rowspan}" class="align-middle">${cvsStoreName}</td>`;
+            // 客戶備註
+            html += `<td rowspan="${rowspan}" class="align-middle">${order.customer_note || ''}</td>`;
+          }
+
+          // 購買商品
+          let productName = item.name || '未知商品';
+          // Add meta data if exists
+          if (item.meta_data && item.meta_data.length > 0) {
+            const metaInfo = item.meta_data
+              .filter(m => m.key !== '_reduced_stock')
+              .map(m => {
+                const key = m.display_key || m.key;
+                const value = m.display_value || m.value;
+                return `${key}: ${value}`;
+              })
+              .join(', ');
+            if (metaInfo) {
+              productName += `<br><small class="text-muted">${metaInfo}</small>`;
+            }
+          }
+          html += `<td>${productName}</td>`;
+
+          // 數量
+          html += `<td class="text-center">${item.quantity || 0}</td>`;
+
+          // 價格
+          html += `<td class="text-end">${item.price || 0}</td>`;
+
+          // 小計
+          html += `<td class="text-end">${itemSubtotal.toFixed(0)}</td>`;
+
+          html += '</tr>';
+        });
+
+        // Add separator row after each order
+        if (orderIndex < orders.length - 1) {
+          html += '<tr class="order-row"><td colspan="13" style="height: 5px; background-color: #000;"></td></tr>';
+        }
+      });
+
+      html += `
+          </tbody>
+        </table>
+      `;
+
+      container.innerHTML = html;
+    }
+  </script>
+</body>
+</html>

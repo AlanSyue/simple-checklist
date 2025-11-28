@@ -14,6 +14,7 @@ let aggregatedOrdersCache = [];
 const lastUploadElementId = "sell-orders-last-upload";
 let startDateFilter = "";
 let endDateFilter = "";
+let selectedOrderIds = new Set(); // Store selected order IDs for export
 
 document.addEventListener("DOMContentLoaded", () => {
   const form = document.getElementById(selector.uploadForm);
@@ -42,6 +43,12 @@ document.addEventListener("DOMContentLoaded", () => {
       endDateFilter = event.target.value;
       fetchAggregatedOrders();
     });
+  }
+
+  // Initialize select all checkbox
+  const selectAllCheckbox = document.getElementById('select-all-checkbox');
+  if (selectAllCheckbox) {
+    selectAllCheckbox.addEventListener('change', toggleSelectAll);
   }
 
   fetchAggregatedOrders();
@@ -166,7 +173,7 @@ function renderAggregatedOrders(orders) {
   if (!orders || orders.length === 0) {
     body.innerHTML = `
       <tr>
-        <td colspan="8" class="text-center text-muted">目前沒有上傳資料</td>
+        <td colspan="9" class="text-center text-muted">目前沒有上傳資料</td>
       </tr>
     `;
     return;
@@ -175,9 +182,11 @@ function renderAggregatedOrders(orders) {
   orders.forEach((order, index) => {
     // Extract note from first item that has a note
     const note = (order.items || []).find(item => item.note && item.note.trim() !== "")?.note || "";
+    const isSelected = selectedOrderIds.has(order.order_no);
 
     const row = document.createElement("tr");
     row.innerHTML = `
+      <td><input type="checkbox" class="form-check-input order-checkbox" data-order-id="${order.order_no}" ${isSelected ? 'checked' : ''} onchange="toggleOrderSelection('${order.order_no}')"></td>
       <td>${order.order_no || "-"}</td>
       <td>${formatDate(order.ordered_at)}</td>
       <td>${order.receiver_name || "-"}</td>
@@ -193,6 +202,9 @@ function renderAggregatedOrders(orders) {
     `;
     body.appendChild(row);
   });
+
+  updateSelectedCount();
+  updateSelectAllCheckbox();
 }
 
 function showUploadedOrderDetail(index) {
@@ -390,3 +402,202 @@ async function handleClearOrders() {
     clearBtn.innerHTML = originalHTML;
   }
 }
+
+// 切換訂單選取狀態
+function toggleOrderSelection(orderNo) {
+  if (selectedOrderIds.has(orderNo)) {
+    selectedOrderIds.delete(orderNo);
+  } else {
+    selectedOrderIds.add(orderNo);
+  }
+  updateSelectedCount();
+  updateSelectAllCheckbox();
+}
+
+// 更新選取數量顯示
+function updateSelectedCount() {
+  const countElement = document.getElementById('selected-count');
+  if (countElement) {
+    countElement.textContent = `已選擇 ${selectedOrderIds.size} 筆訂單`;
+  }
+}
+
+// 更新全選checkbox狀態
+function updateSelectAllCheckbox() {
+  const selectAllCheckbox = document.getElementById('select-all-checkbox');
+  if (!selectAllCheckbox) return;
+
+  const orderCheckboxes = document.querySelectorAll('.order-checkbox');
+  const allChecked = orderCheckboxes.length > 0 && Array.from(orderCheckboxes).every(cb => cb.checked);
+  const someChecked = Array.from(orderCheckboxes).some(cb => cb.checked);
+
+  selectAllCheckbox.checked = allChecked;
+  selectAllCheckbox.indeterminate = someChecked && !allChecked;
+}
+
+// 全選/取消全選
+function toggleSelectAll() {
+  const selectAllCheckbox = document.getElementById('select-all-checkbox');
+  const isChecked = selectAllCheckbox.checked;
+
+  selectedOrderIds.clear();
+
+  if (isChecked) {
+    aggregatedOrdersCache.forEach(order => {
+      selectedOrderIds.add(order.order_no);
+    });
+  }
+
+  renderAggregatedOrders(aggregatedOrdersCache);
+}
+
+// 匯出揀貨單
+async function exportPickingList() {
+  if (selectedOrderIds.size === 0) {
+    showAlert("請至少選擇一筆訂單", "warning");
+    return;
+  }
+
+  const exportBtn = document.getElementById('export-picking-list-btn');
+  const originalBtnHTML = exportBtn ? exportBtn.innerHTML : '';
+
+  // 先打開視窗（在用戶操作的同步上下文中）
+  const printWindow = window.open('sell-picking-list-print.html', '_blank');
+
+  if (!printWindow) {
+    showAlert("無法打開新視窗，請檢查瀏覽器的彈出視窗設定", "warning");
+    return;
+  }
+
+  try {
+    if (exportBtn) {
+      exportBtn.innerHTML = `<span class="spinner-border spinner-border-sm me-2"></span>載入訂單資料...`;
+      exportBtn.disabled = true;
+    }
+
+    // Get selected orders
+    const selectedOrders = aggregatedOrdersCache.filter(order => selectedOrderIds.has(order.order_no));
+
+    if (selectedOrders.length === 0) {
+      printWindow.close();
+      throw new Error('無法載入訂單資料');
+    }
+
+    // 建立一個監聽器，等待新視窗載入完成
+    const loadPromise = new Promise((resolve) => {
+      if (printWindow.document.readyState === 'complete') {
+        resolve();
+      } else {
+        printWindow.addEventListener('load', resolve);
+      }
+    });
+
+    // 等待視窗載入完成
+    await loadPromise;
+
+    // 額外延遲確保事件監聽器已設置
+    await new Promise(resolve => setTimeout(resolve, 100));
+
+    // Sort orders by ordered_at ascending
+    selectedOrders.sort((a, b) => {
+      const dateA = new Date(a.ordered_at);
+      const dateB = new Date(b.ordered_at);
+      return dateA - dateB;
+    });
+
+    // 通過 postMessage 將資料傳遞給新視窗
+    printWindow.postMessage({
+      type: 'sellPickingListOrders',
+      orders: selectedOrders
+    }, window.location.origin);
+
+    showAlert(`已開啟揀貨單（${selectedOrders.length} 筆訂單）`, "success");
+  } catch (error) {
+    console.error("匯出揀貨單失敗:", error);
+    if (printWindow && !printWindow.closed) {
+      printWindow.close();
+    }
+    showAlert(`匯出揀貨單失敗：${error.message}`, "danger");
+  } finally {
+    if (exportBtn) {
+      exportBtn.disabled = false;
+      exportBtn.innerHTML = originalBtnHTML;
+    }
+  }
+}
+
+// 匯出訂單列表
+async function exportOrderList() {
+  if (selectedOrderIds.size === 0) {
+    showAlert("請至少選擇一筆訂單", "warning");
+    return;
+  }
+
+  const exportBtn = document.getElementById('export-order-list-btn');
+  const originalBtnHTML = exportBtn ? exportBtn.innerHTML : '';
+
+  // 先打開視窗（在用戶操作的同步上下文中）
+  const printWindow = window.open('sell-order-list-print.html', '_blank');
+
+  if (!printWindow) {
+    showAlert("無法打開新視窗，請檢查瀏覽器的彈出視窗設定", "warning");
+    return;
+  }
+
+  try {
+    if (exportBtn) {
+      exportBtn.innerHTML = `<span class="spinner-border spinner-border-sm me-2"></span>載入訂單資料...`;
+      exportBtn.disabled = true;
+    }
+
+    // Get selected orders
+    const selectedOrders = aggregatedOrdersCache.filter(order => selectedOrderIds.has(order.order_no));
+
+    if (selectedOrders.length === 0) {
+      printWindow.close();
+      throw new Error('無法載入訂單資料');
+    }
+
+    // 建立一個監聽器，等待新視窗載入完成
+    const loadPromise = new Promise((resolve) => {
+      if (printWindow.document.readyState === 'complete') {
+        resolve();
+      } else {
+        printWindow.addEventListener('load', resolve);
+      }
+    });
+
+    // 等待視窗載入完成
+    await loadPromise;
+
+    // 額外延遲確保事件監聽器已設置
+    await new Promise(resolve => setTimeout(resolve, 100));
+
+    // Sort orders by ordered_at ascending
+    selectedOrders.sort((a, b) => {
+      const dateA = new Date(a.ordered_at);
+      const dateB = new Date(b.ordered_at);
+      return dateA - dateB;
+    });
+
+    // 通過 postMessage 將資料傳遞給新視窗
+    printWindow.postMessage({
+      type: 'sellOrderListData',
+      orders: selectedOrders
+    }, window.location.origin);
+
+    showAlert(`已開啟訂單列表（${selectedOrders.length} 筆訂單）`, "success");
+  } catch (error) {
+    console.error("匯出訂單列表失敗:", error);
+    if (printWindow && !printWindow.closed) {
+      printWindow.close();
+    }
+    showAlert(`匯出訂單列表失敗：${error.message}`, "danger");
+  } finally {
+    if (exportBtn) {
+      exportBtn.disabled = false;
+      exportBtn.innerHTML = originalBtnHTML;
+    }
+  }
+}
+

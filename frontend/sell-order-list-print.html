@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>賣貨便訂單列表</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+  <style>
+    @media print {
+      .no-print {
+        display: none;
+      }
+      body {
+        print-color-adjust: exact;
+        -webkit-print-color-adjust: exact;
+      }
+      @page {
+        size: A4 landscape;
+        margin: 10mm;
+      }
+    }
+    body {
+      font-size: 12px;
+    }
+    .order-row {
+      border-bottom: 2px solid #000;
+    }
+    .product-row {
+      border-bottom: 1px solid #ddd;
+    }
+    .order-header {
+      background-color: #e9ecef;
+      font-weight: bold;
+    }
+    table {
+      font-size: 11px;
+    }
+    th {
+      font-size: 12px;
+      white-space: nowrap;
+    }
+  </style>
+</head>
+<body>
+  <div class="container-fluid py-3">
+    <div class="d-flex justify-content-between align-items-center mb-3 no-print">
+      <h3>賣貨便訂單列表</h3>
+      <div>
+        <button class="btn btn-primary" onclick="window.print()">
+          <i class="bi bi-printer"></i> 列印
+        </button>
+        <button class="btn btn-secondary" onclick="window.close()">
+          關閉
+        </button>
+      </div>
+    </div>
+
+    <div id="order-list-container">
+      <p class="text-center">載入中...</p>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+  <script>
+    let orders = [];
+
+    // Listen for data from parent window
+    window.addEventListener('message', function(event) {
+      if (event.data.type === 'sellOrderListData') {
+        orders = event.data.orders;
+        renderOrderList();
+      }
+    });
+
+    function renderOrderList() {
+      const container = document.getElementById('order-list-container');
+
+      if (!orders || orders.length === 0) {
+        container.innerHTML = '<p class="text-center text-muted">沒有訂單資料</p>';
+        return;
+      }
+
+      let html = `
+        <div class="mb-3">
+          <p><strong>匯出時間：</strong>${new Date().toLocaleString('zh-TW')}</p>
+          <p><strong>訂單數量：</strong>${orders.length} 筆</p>
+        </div>
+        <table class="table table-bordered table-sm">
+          <thead class="table-light">
+            <tr>
+              <th style="width: 30px;">☐</th>
+              <th>訂單編號</th>
+              <th>訂購日期</th>
+              <th>收件人</th>
+              <th>取件地址</th>
+              <th>總數量</th>
+              <th>總金額</th>
+              <th>備註</th>
+              <th>商品名稱</th>
+              <th>數量</th>
+              <th>單價</th>
+              <th>折扣價</th>
+            </tr>
+          </thead>
+          <tbody>
+      `;
+
+      orders.forEach((order, orderIndex) => {
+        const items = order.items || [];
+        const rowspan = items.length || 1;
+
+        // Format order date
+        const orderDate = order.ordered_at ? new Date(order.ordered_at).toLocaleDateString('zh-TW', {
+          year: 'numeric',
+          month: '2-digit',
+          day: '2-digit'
+        }).replace(/\//g, '-') : 'N/A';
+
+        items.forEach((item, itemIndex) => {
+          html += '<tr class="product-row">';
+
+          // Only show order info on first item
+          if (itemIndex === 0) {
+            // 勾選欄位
+            html += `<td rowspan="${rowspan}" class="align-middle text-center">☐</td>`;
+            // 訂單編號
+            html += `<td rowspan="${rowspan}" class="order-header align-middle">${order.order_no}</td>`;
+            // 訂購日期
+            html += `<td rowspan="${rowspan}" class="align-middle">${orderDate}</td>`;
+            // 收件人
+            html += `<td rowspan="${rowspan}" class="align-middle">${order.receiver_name || 'N/A'}</td>`;
+            // 取件地址
+            html += `<td rowspan="${rowspan}" class="align-middle">${order.address || ''}</td>`;
+            // 總數量
+            html += `<td rowspan="${rowspan}" class="align-middle text-center">${order.total_qty || 0}</td>`;
+            // 總金額
+            html += `<td rowspan="${rowspan}" class="order-header align-middle text-end"><strong>${order.total_amount || 0}</strong></td>`;
+            // 備註
+            html += `<td rowspan="${rowspan}" class="align-middle">${order.note || ''}</td>`;
+          }
+
+          // 商品名稱
+          html += `<td>${item.product_name || '未知商品'}</td>`;
+
+          // 數量
+          html += `<td class="text-center">${item.qty || 0}</td>`;
+
+          // 單價
+          html += `<td class="text-end">${Math.round(item.unit_price || 0)}</td>`;
+
+          // 折扣價
+          html += `<td class="text-end">${Math.round(item.discount_price || 0)}</td>`;
+
+          html += '</tr>';
+        });
+
+        // Add separator row after each order
+        if (orderIndex < orders.length - 1) {
+          html += '<tr class="order-row"><td colspan="12" style="height: 5px; background-color: #000;"></td></tr>';
+        }
+      });
+
+      html += `
+          </tbody>
+        </table>
+      `;
+
+      container.innerHTML = html;
+    }
+  </script>
+</body>
+</html>
