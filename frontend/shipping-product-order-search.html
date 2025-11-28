@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>依商品搜尋出貨中訂單</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css" rel="stylesheet">
+  <link href="css/style.css" rel="stylesheet">
+  <style>
+    .product-list {
+      height: 400px;
+      overflow-y: auto;
+      border: 1px solid #ddd;
+      padding: 10px;
+      border-radius: 5px;
+    }
+    .product-item {
+      cursor: pointer;
+      user-select: none;
+    }
+    #selected-products {
+      min-height: 150px;
+      background-color: #f8f9fa;
+    }
+    #excluded-products {
+      min-height: 100px;
+      background-color: #fff0f0;
+      border: 1px dashed #dc3545;
+    }
+    .product-tag {
+      cursor: pointer;
+    }
+  </style>
+</head>
+<body class="bg-light">
+  <div class="container-fluid py-4">
+    <div id="nav-container"></div>
+    <div class="card shadow-sm mt-3">
+      <div class="card-header bg-primary text-white">
+        <h2 class="mb-0"><i class="bi bi-truck me-2"></i>依商品搜尋出貨中訂單</h2>
+      </div>
+      <div class="card-body">
+        <div class="row">
+          <!-- Available Products -->
+          <div class="col-md-5">
+            <h5>所有商品</h5>
+            <div class="mb-2">
+              <strong>點擊模式:</strong>
+              <div class="form-check form-check-inline">
+                <input class="form-check-input" type="radio" name="click-mode" id="mode-add" value="add" checked>
+                <label class="form-check-label" for="mode-add">加入搜尋</label>
+              </div>
+              <div class="form-check form-check-inline">
+                <input class="form-check-input" type="radio" name="click-mode" id="mode-exclude" value="exclude">
+                <label class="form-check-label" for="mode-exclude">加入排除</label>
+              </div>
+            </div>
+            <input type="text" id="product-filter" class="form-control mb-2" placeholder="篩選商品...">
+            <div id="all-products" class="product-list">
+              <!-- Products will be loaded here -->
+            </div>
+          </div>
+
+          <!-- Selected Products & Search -->
+          <div class="col-md-7">
+            <h5>搜尋商品 (點擊或拖曳至此)</h5>
+            <div id="selected-products" class="product-list mb-3">
+              <!-- Selected products will appear here -->
+            </div>
+            <div class="row">
+              <div class="col-md-6">
+                <label for="search-mode" class="form-label">搜尋模式</label>
+                <select id="search-mode" class="form-select">
+                  <option value="contains" selected>包含 (Contains)</option>
+                  <option value="exact">完全配對 (Exact Match)</option>
+                  <option value="excludes">排除 (Excludes)</option>
+                </select>
+              </div>
+              <div class="col-md-6 d-flex align-items-end">
+                <button id="search-btn" class="btn btn-primary w-100"><i class="bi bi-search"></i> 搜尋</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Excluded Products -->
+        <div class="row mt-3">
+          <div class="col-12">
+            <h5>排除商品 (拖曳至此)</h5>
+            <div id="excluded-products" class="product-list">
+              <!-- Excluded products will appear here -->
+            </div>
+          </div>
+        </div>
+
+        <!-- Search Results -->
+        <hr class="my-4">
+        <h4 class="mb-3">搜尋結果</h4>
+        
+        <!-- Product Summary Table -->
+        <div id="product-summary" class="mb-4">
+          <!-- Product summary will be displayed here -->
+        </div>
+        
+        <div id="search-results">
+          <!-- Results will be displayed here -->
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+  <script src="js/nav.js"></script>
+  <script src="js/shipping-product-order-search.js?v=1.1"></script>
+</body>
+
+<!-- Order Detail Modal -->
+<div class="modal fade" id="orderDetailModal" tabindex="-1" aria-labelledby="orderDetailModalLabel" aria-hidden="true">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="orderDetailModalLabel">訂單詳細資料</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body" id="orderDetailBody">
+        <!-- Details will be populated here -->
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">關閉</button>
+      </div>
+    </div>
+  </div>
+</div>
+</html>

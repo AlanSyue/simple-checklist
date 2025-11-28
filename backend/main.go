@@ -133,6 +133,7 @@ type UploadedOrder struct {
 	DiscountPrice float64   `json:"discount_price"`
 	Qty           int       `json:"qty"`
 	Note          string    `json:"note"`
+	IsShipping    bool      `json:"is_shipping" gorm:"default:false"`
 }
 
 type UploadedOrderItem struct {
@@ -1049,6 +1050,18 @@ func main() {
 	r.GET("/product-order-search.html", func(c *gin.Context) {
 		serveHTML(c, "./frontend/product-order-search.html")
 	})
+	r.GET("/shipping-orders.html", func(c *gin.Context) {
+		serveHTML(c, "./frontend/shipping-orders.html")
+	})
+	r.GET("/shipping-sell-orders.html", func(c *gin.Context) {
+		serveHTML(c, "./frontend/shipping-sell-orders.html")
+	})
+	r.GET("/shipping-combined-picking.html", func(c *gin.Context) {
+		serveHTML(c, "./frontend/shipping-combined-picking.html")
+	})
+	r.GET("/shipping-product-order-search.html", func(c *gin.Context) {
+		serveHTML(c, "./frontend/shipping-product-order-search.html")
+	})
 	r.POST("/orders/upload", func(c *gin.Context) {
 		file, err := c.FormFile("file")
 		if err != nil {
@@ -1177,6 +1190,105 @@ func main() {
 
 	r.DELETE("/orders/uploaded", func(c *gin.Context) {
 		if err := clearUploadedOrders(db); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"status": "cleared"})
+	})
+
+	// --- Shipping Sell Orders Routes ---
+	r.POST("/orders/upload-shipping", func(c *gin.Context) {
+		file, err := c.FormFile("file")
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "file 欄位缺失"})
+			return
+		}
+
+		if !strings.HasSuffix(strings.ToLower(file.Filename), ".xlsx") {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "僅接受 .xlsx 檔案"})
+			return
+		}
+
+		src, err := file.Open()
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "無法讀取上傳檔案"})
+			return
+		}
+		defer src.Close()
+
+		xl, err := excelize.OpenReader(src)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("解析檔案失敗：%v", err)})
+			return
+		}
+
+		sheetName := xl.GetSheetName(xl.GetActiveSheetIndex())
+		if sheetName == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "找不到有效的工作表"})
+			return
+		}
+
+		rows, err := xl.GetRows(sheetName)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "讀取工作表資料失敗"})
+			return
+		}
+
+		if len(rows) == 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "沒有資料"})
+			return
+		}
+
+		headerIndex, dataStartRow, err := detectHeaderRow(rows)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+
+		var orders []UploadedOrder
+		for i := dataStartRow; i < len(rows); i++ {
+			logRow("解析列", i+1, rows[i])
+			if !rowHasData(rows[i]) {
+				continue
+			}
+			order, err := parseUploadedRow(rows[i], headerIndex, i+1)
+			if err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+				return
+			}
+			order.IsShipping = true // Mark as shipping order
+			orders = append(orders, order)
+		}
+
+		if err := saveUploadedOrders(db, orders); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+
+		if err := recordUploadBatch(db); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{"rows": len(orders)})
+	})
+
+	r.GET("/orders/uploaded-shipping/summary", func(c *gin.Context) {
+		var stored []UploadedOrder
+		if err := db.Where("is_shipping = ?", true).Order("ordered_at desc, id desc").Find(&stored).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+
+		startDate := c.Query("start_date")
+		endDate := c.Query("end_date")
+		filtered := filterUploadedOrdersByDate(stored, startDate, endDate)
+
+		c.JSON(http.StatusOK, buildUploadedOrderSummaries(filtered))
+	})
+
+	r.DELETE("/orders/uploaded-shipping", func(c *gin.Context) {
+		if err := db.Where("is_shipping = ?", true).Delete(&UploadedOrder{}).Error; err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
@@ -1531,6 +1643,233 @@ func main() {
 		})
 	})
 
+	// --- Shipping Orders Routes (prepare-stock status) ---
+	api.GET("/shipping-orders", func(c *gin.Context) {
+		wooOrders, err := fetchShippingOrders()
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+
+		// Get all order IDs
+		orderIDs := make([]int, len(wooOrders))
+		for i, order := range wooOrders {
+			orderIDs[i] = order.ID
+		}
+
+		// Fetch all metadata in one query
+		var metadatas []OrderMetadata
+		if len(orderIDs) > 0 {
+			db.Where("order_id IN ?", orderIDs).Find(&metadatas)
+		}
+
+		// Create a map for easy lookup
+		metadataMap := make(map[int]OrderMetadata)
+		for _, m := range metadatas {
+			metadataMap[m.OrderID] = m
+		}
+
+		// Merge data and apply tag filter
+		var filteredWooOrders []WooOrder
+		requestedTags := c.QueryArray("tags")
+		hasRemark := c.Query("has_remark") == "true"
+		hasCustomerNote := c.Query("has_customer_note") == "true"
+
+		for _, order := range wooOrders {
+			var metadata OrderMetadata
+			if m, ok := metadataMap[order.ID]; ok {
+				metadata = m
+			} else {
+				newMeta := OrderMetadata{OrderID: order.ID, Remark: "", Tags: []string{}}
+				db.Create(&newMeta)
+				metadata = newMeta
+			}
+			order.OrderMetadata = metadata
+			order.CVSStoreName = getCVSStoreName(&order)
+
+			// Apply tag filtering (OR logic)
+			tagMatch := true
+			if len(requestedTags) > 0 {
+				hasAnyTag := false
+				for _, reqTag := range requestedTags {
+					for _, orderTag := range metadata.Tags {
+						if reqTag == orderTag {
+							hasAnyTag = true
+							break
+						}
+					}
+					if hasAnyTag {
+						break
+					}
+				}
+				tagMatch = hasAnyTag
+			}
+
+			// Apply remark filter
+			remarkMatch := true
+			if hasRemark {
+				remarkMatch = metadata.Remark != ""
+			}
+
+			// Apply customer note filter
+			customerNoteMatch := true
+			if hasCustomerNote {
+				customerNoteMatch = order.CustomerNote != ""
+			}
+
+			// Apply date range filter
+			dateMatch := true
+			startDateStr := c.Query("start_date")
+			endDateStr := c.Query("end_date")
+
+			if startDateStr != "" || endDateStr != "" {
+				orderDate, err := time.Parse("2006-01-02T15:04:05", order.DateCreated)
+				if err == nil {
+					if startDateStr != "" {
+						startDate, err := time.Parse("2006-01-02", startDateStr)
+						if err == nil {
+							if orderDate.Before(startDate) {
+								dateMatch = false
+							}
+						}
+					}
+					if endDateStr != "" && dateMatch {
+						endDate, err := time.Parse("2006-01-02", endDateStr)
+						if err == nil {
+							endDate = endDate.Add(24 * time.Hour)
+							if orderDate.After(endDate) {
+								dateMatch = false
+							}
+						}
+					}
+				}
+			}
+
+			if tagMatch && remarkMatch && customerNoteMatch && dateMatch {
+				filteredWooOrders = append(filteredWooOrders, order)
+			}
+		}
+
+		c.JSON(http.StatusOK, filteredWooOrders)
+	})
+
+	api.PUT("/shipping-orders/:id", func(c *gin.Context) {
+		id, err := strconv.Atoi(c.Param("id"))
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid order ID"})
+			return
+		}
+
+		var metadataUpdate OrderMetadata
+		if err := c.ShouldBindJSON(&metadataUpdate); err != nil {
+			log.Printf("Failed to bind JSON: %v", err)
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid payload"})
+			return
+		}
+
+		metadataUpdate.OrderID = id
+
+		if err := db.Save(&metadataUpdate).Error; err != nil {
+			log.Printf("Failed to save metadata for order %d: %v", id, err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to save metadata: %v", err)})
+			return
+		}
+
+		c.JSON(http.StatusOK, metadataUpdate)
+	})
+
+	api.POST("/shipping-orders/search-by-products", func(c *gin.Context) {
+		var req ProductSearchRequest
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+			return
+		}
+
+		// Fetch shipping orders
+		wooOrders, err := fetchShippingOrders()
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch WooCommerce orders: " + err.Error()})
+			return
+		}
+
+		var sellOrderRows []UploadedOrder
+		if err := db.Where("is_shipping = ?", true).Order("ordered_at desc, id desc").Find(&sellOrderRows).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch sell orders: " + err.Error()})
+			return
+		}
+		sellOrderSummaries := buildUploadedOrderSummaries(sellOrderRows)
+
+		// Filter orders by products
+		matchedWooOrders := filterWooOrdersByProducts(db, wooOrders, req)
+		matchedSellOrders := filterSellOrdersByProducts(db, sellOrderSummaries, req)
+
+		// Filter by excluded products
+		finalWooOrders := filterWooOrdersByExcludedProducts(db, matchedWooOrders, req.ExcludedProductNames)
+		finalSellOrders := filterSellOrdersByExcludedProducts(db, matchedSellOrders, req.ExcludedProductNames)
+
+		// Sort by date
+		sort.Slice(finalWooOrders, func(i, j int) bool {
+			dateI, errI := time.Parse("2006-01-02T15:04:05", finalWooOrders[i].DateCreated)
+			dateJ, errJ := time.Parse("2006-01-02T15:04:05", finalWooOrders[j].DateCreated)
+			if errI != nil || errJ != nil {
+				return false
+			}
+			return dateI.Before(dateJ)
+		})
+
+		sort.Slice(finalSellOrders, func(i, j int) bool {
+			return finalSellOrders[i].OrderedAt.Before(finalSellOrders[j].OrderedAt)
+		})
+
+		c.JSON(http.StatusOK, gin.H{
+			"woo_orders":  finalWooOrders,
+			"sell_orders": finalSellOrders,
+		})
+	})
+
+	api.GET("/shipping-picking-list", func(c *gin.Context) {
+		orders, err := fetchShippingOrders()
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+
+		startDate := c.Query("start_date")
+		endDate := c.Query("end_date")
+		filtered := filterWooOrdersByDate(orders, startDate, endDate)
+
+		pickingList := generatePickingList(db, filtered)
+		c.JSON(http.StatusOK, pickingList)
+	})
+
+	api.GET("/shipping-combined-picking-list", func(c *gin.Context) {
+		// Fetch WooCommerce shipping orders
+		wooOrders, err := fetchShippingOrders()
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to fetch WooCommerce orders: %v", err)})
+			return
+		}
+
+		// Fetch uploaded Sell orders (is_shipping = true)
+		var sellOrderRows []UploadedOrder
+		if err := db.Where("is_shipping = ?", true).Order("ordered_at desc, id desc").Find(&sellOrderRows).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to fetch sell orders: %v", err)})
+			return
+		}
+
+		// Apply date filter
+		startDate := c.Query("start_date")
+		endDate := c.Query("end_date")
+		filteredWooOrders := filterWooOrdersByDate(wooOrders, startDate, endDate)
+		filteredSellOrders := filterUploadedOrdersByDate(sellOrderRows, startDate, endDate)
+
+		// Build combined picking list
+		combinedList := buildCombinedPickingList(db, filteredWooOrders, filteredSellOrders)
+
+		c.JSON(http.StatusOK, combinedList)
+	})
+
+	// --- Processing Orders Routes ---
 	api.GET("/picking-list", func(c *gin.Context) {
 		orders, err := fetchProcessingOrders()
 		if err != nil {
@@ -1665,12 +2004,20 @@ func generatePickingList(db *gorm.DB, orders []WooOrder) []PickingListItem {
 }
 
 func fetchProcessingOrders() ([]WooOrder, error) {
+	return fetchOrdersByStatus("processing")
+}
+
+func fetchShippingOrders() ([]WooOrder, error) {
+	return fetchOrdersByStatus("prepare-stock")
+}
+
+func fetchOrdersByStatus(status string) ([]WooOrder, error) {
 	var allOrders []WooOrder
 	page := 1
 	perPage := 100
 
 	for {
-		url := fmt.Sprintf("https://flowers.fenny-studio.com/wp-json/wc/v3/orders?status=processing&per_page=%d&page=%d", perPage, page)
+		url := fmt.Sprintf("https://flowers.fenny-studio.com/wp-json/wc/v3/orders?status=%s&per_page=%d&page=%d", status, perPage, page)
 
 		req, err := http.NewRequest("GET", url, nil)
 		if err != nil {
@@ -1703,7 +2050,7 @@ func fetchProcessingOrders() ([]WooOrder, error) {
 		// 將這一頁的訂單加入總列表
 		allOrders = append(allOrders, orders...)
 
-		log.Printf("已取得第 %d 頁，共 %d 筆訂單（本頁 %d 筆）", page, len(allOrders), len(orders))
+		log.Printf("已取得第 %d 頁，共 %d 筆訂單（本頁 %d 筆）[狀態: %s]", page, len(allOrders), len(orders), status)
 
 		// 如果這頁的訂單數少於 per_page，表示已經是最後一頁
 		if len(orders) < perPage {
