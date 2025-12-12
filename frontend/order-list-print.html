@@ -98,7 +98,6 @@
               <th>訂單 ID</th>
               <th>建立訂單時間</th>
               <th>訂購人</th>
-              <th>付款方式</th>
               <th>金額</th>
               <th>出貨方式</th>
               <th>取貨門市</th>
@@ -142,8 +141,6 @@
             html += `<td rowspan="${rowspan}" class="align-middle">${dateCreated}</td>`;
             // 訂購人
             html += `<td rowspan="${rowspan}" class="align-middle">${order.shipping.first_name || 'N/A'}</td>`;
-            // 付款方式
-            html += `<td rowspan="${rowspan}" class="align-middle">${order.payment_method_title || 'N/A'}</td>`;
             // 金額
             html += `<td rowspan="${rowspan}" class="order-header align-middle text-end"><strong>${order.total || 0}</strong></td>`;
             // 出貨方式
@@ -186,7 +183,7 @@
 
         // Add separator row after each order
         if (orderIndex < orders.length - 1) {
-          html += '<tr class="order-row"><td colspan="13" style="height: 5px; background-color: #000;"></td></tr>';
+          html += '<tr class="order-row"><td colspan="12" style="height: 5px; background-color: #000;"></td></tr>';
         }
       });
 
