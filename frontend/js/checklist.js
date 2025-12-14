@@ -104,11 +104,17 @@ function openReminderModal(itemId) {
     reminderModal = new bootstrap.Modal(document.getElementById('reminderModal'));
   }
 
-  // 設定當前提醒日期
+  // 設定當前提醒日期（轉換為本地時間）
   const modalInput = document.getElementById('modalReminderDate');
   if (item.reminderDate) {
     const date = new Date(item.reminderDate);
-    modalInput.value = date.toISOString().slice(0, 16);
+    // 轉換為本地時間格式（不是 UTC）
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    const hours = String(date.getHours()).padStart(2, '0');
+    const minutes = String(date.getMinutes()).padStart(2, '0');
+    modalInput.value = `${year}-${month}-${day}T${hours}:${minutes}`;
   } else {
     modalInput.value = "";
   }
@@ -133,6 +139,8 @@ function saveReminder() {
     return;
   }
 
+  // 將使用者輸入的本地時間（datetime-local）解析為正確的 Date 物件
+  // datetime-local 的值格式為 "YYYY-MM-DDTHH:mm"
   const reminderDate = new Date(selectedDate);
   const now = new Date();
 
@@ -142,7 +150,8 @@ function saveReminder() {
     return;
   }
 
-  // 更新提醒日期
+  // 將本地時間轉換為 ISO 字串儲存（會自動轉為 UTC）
+  // 但 JavaScript 的 Date 會正確處理時區
   fetch(`/api/checklist/${currentEditingItemId}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
