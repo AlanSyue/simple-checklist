@@ -17,16 +17,39 @@
       </div>
       <div class="card-body">
         <div class="row mb-4 g-2">
-          <div class="col-md-8">
+          <div class="col-md-9">
             <input id="item" class="form-control" placeholder="新增項目..." />
           </div>
-          <div class="col-md-4 d-grid">
+          <div class="col-md-3 d-grid">
             <button onclick="addItem()" class="btn btn-primary w-100 mt-2 mt-md-0">
               <i class="bi bi-plus-circle me-1"></i>新增
             </button>
           </div>
         </div>
         <div id="list" class="list-group"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 提醒日期設定模態框 -->
+  <div class="modal fade" id="reminderModal" tabindex="-1" aria-labelledby="reminderModalLabel" aria-hidden="true">
+    <div class="modal-dialog">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h5 class="modal-title" id="reminderModalLabel"><i class="bi bi-clock me-2"></i>設定提醒時間</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">
+          <div class="mb-3">
+            <label for="modalReminderDate" class="form-label">提醒日期時間</label>
+            <input type="datetime-local" class="form-control" id="modalReminderDate">
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+          <button type="button" class="btn btn-danger" id="clearReminderBtn" onclick="clearReminder()">清除提醒</button>
+          <button type="button" class="btn btn-primary" onclick="saveReminder()">儲存</button>
+        </div>
       </div>
     </div>
   </div>

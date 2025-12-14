@@ -23,10 +23,11 @@ import (
 
 // --- Existing Checklist Models ---
 type ChecklistItem struct {
-	ID        uint      `json:"id" gorm:"primaryKey"`
-	Text      string    `json:"text"`
-	Checked   bool      `json:"checked"`
-	CreatedAt time.Time `json:"createdAt" gorm:"autoCreateTime"`
+	ID           uint       `json:"id" gorm:"primaryKey"`
+	Text         string     `json:"text"`
+	Checked      bool       `json:"checked"`
+	ReminderDate *time.Time `json:"reminderDate,omitempty"`
+	CreatedAt    time.Time  `json:"createdAt" gorm:"autoCreateTime"`
 }
 
 type ChecklistPayload struct {
@@ -1332,22 +1333,35 @@ func main() {
 	})
 
 	api.POST("/checklist", func(c *gin.Context) {
-		var body ChecklistPayload
+		var body struct {
+			Items []map[string]interface{} `json:"items"`
+		}
 		if err := c.ShouldBindJSON(&body); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid payload"})
 			return
 		}
-		for _, item := range body.Items {
-			db.Create(&ChecklistItem{Text: item.Text, Checked: item.Checked})
+		for _, itemData := range body.Items {
+			newItem := ChecklistItem{
+				Text:    itemData["text"].(string),
+				Checked: false,
+			}
+			if checked, ok := itemData["checked"].(bool); ok {
+				newItem.Checked = checked
+			}
+			if val, exists := itemData["reminderDate"]; exists {
+				if reminderDateStr, ok := val.(string); ok && reminderDateStr != "" {
+					if parsedTime, err := time.Parse(time.RFC3339, reminderDateStr); err == nil {
+						newItem.ReminderDate = &parsedTime
+					}
+				}
+			}
+			db.Create(&newItem)
 		}
 		c.JSON(200, gin.H{"status": "saved"})
 	})
 
 	api.PATCH("/checklist/:id", func(c *gin.Context) {
-		var update struct {
-			Checked *bool   `json:"checked"`
-			Text    *string `json:"text"`
-		}
+		var update map[string]interface{}
 		if err := c.ShouldBindJSON(&update); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid payload"})
 			return
@@ -1358,11 +1372,22 @@ func main() {
 			c.JSON(http.StatusNotFound, gin.H{"error": "Not found"})
 			return
 		}
-		if update.Checked != nil {
-			item.Checked = *update.Checked
+		if checked, ok := update["checked"].(bool); ok {
+			item.Checked = checked
 		}
-		if update.Text != nil {
-			item.Text = *update.Text
+		if text, ok := update["text"].(string); ok {
+			item.Text = text
+		}
+		if reminderDateStr, ok := update["reminderDate"].(string); ok {
+			if reminderDateStr != "" {
+				if parsedTime, err := time.Parse(time.RFC3339, reminderDateStr); err == nil {
+					item.ReminderDate = &parsedTime
+				}
+			} else {
+				item.ReminderDate = nil
+			}
+		} else if _, exists := update["reminderDate"]; exists && update["reminderDate"] == nil {
+			item.ReminderDate = nil
 		}
 		db.Save(&item)
 		c.JSON(200, item)

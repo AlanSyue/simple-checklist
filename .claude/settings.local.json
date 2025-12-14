@@ -18,7 +18,9 @@
       "Bash(go mod tidy:*)",
       "Bash(curl:*)",
       "Bash(go run:*)",
-      "Bash(pkill:*)"
+      "Bash(pkill:*)",
+      "Bash(python3:*)",
+      "Bash(docker-compose build:*)"
     ],
     "deny": [],
     "ask": []
