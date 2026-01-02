@@ -38,9 +38,14 @@ function showOrderDetails(orderId) {
             <tbody>
         `;
         order.line_items.forEach((lineItem) => {
+          const excludedMetaKeys = new Set([
+            '_reduced_stock',
+            '_advanced_woo_discount_item_total_discount',
+            '_wdr_discounts'
+          ]);
           const metas = lineItem.meta_data || [];
           const metaText = metas
-            .filter((m) => m.key !== '_reduced_stock') // 排除 _reduced_stock
+            .filter((m) => !excludedMetaKeys.has(m.key))
             .map((m) => {
               const key = m.display_key || m.key;
               const value = m.display_value || m.value;

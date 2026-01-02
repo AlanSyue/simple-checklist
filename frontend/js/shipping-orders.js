@@ -762,9 +762,14 @@ function generatePickingListPDF(orders) {
     const tableData = [];
     if (order.line_items && order.line_items.length > 0) {
       order.line_items.forEach(item => {
+        const excludedMetaKeys = new Set([
+          '_reduced_stock',
+          '_advanced_woo_discount_item_total_discount',
+          '_wdr_discounts'
+        ]);
         const metas = item.meta_data || [];
         const metaText = metas
-          .filter(m => m.key !== '_reduced_stock')
+          .filter(m => !excludedMetaKeys.has(m.key))
           .map(m => {
             const key = m.display_key || m.key;
             const value = m.display_value || m.value;
