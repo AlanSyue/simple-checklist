@@ -116,7 +116,7 @@ type MetaData struct {
 	Key          string `json:"key"`
 	Value        any    `json:"value"`
 	DisplayKey   string `json:"display_key"`
-	DisplayValue string `json:"display_value"`
+	DisplayValue any    `json:"display_value"`
 }
 
 type ShippingLine struct {
