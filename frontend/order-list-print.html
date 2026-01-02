@@ -155,8 +155,13 @@
           let productName = item.name || '未知商品';
           // Add meta data if exists
           if (item.meta_data && item.meta_data.length > 0) {
+            const excludedMetaKeys = new Set([
+              '_reduced_stock',
+              '_advanced_woo_discount_item_total_discount',
+              '_wdr_discounts'
+            ]);
             const metaInfo = item.meta_data
-              .filter(m => m.key !== '_reduced_stock')
+              .filter(m => !excludedMetaKeys.has(m.key))
               .map(m => {
                 const key = m.display_key || m.key;
                 const value = m.display_value || m.value;
