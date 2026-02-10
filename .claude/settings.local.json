@@ -20,7 +20,20 @@
       "Bash(go run:*)",
       "Bash(pkill:*)",
       "Bash(python3:*)",
-      "Bash(docker-compose build:*)"
+      "Bash(docker-compose build:*)",
+      "WebSearch",
+      "Bash(ls:*)",
+      "WebFetch(domain:developers.ecpay.com.tw)",
+      "WebFetch(domain:www.yungantools.com)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:hackmd.io)",
+      "Bash(test:*)",
+      "Bash(docker compose:*)",
+      "Bash(docker network prune:*)",
+      "Bash(docker compose up:*)",
+      "Bash(git status:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)"
     ],
     "deny": [],
     "ask": []

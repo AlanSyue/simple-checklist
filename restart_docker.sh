@@ -6,4 +6,7 @@ docker compose down
 echo "Rebuilding and restarting Docker containers..."
 docker compose up --build -d
 
+echo "Removing dangling images..."
+docker image prune -f
+
 echo "Done."
