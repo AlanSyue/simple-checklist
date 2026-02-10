@@ -1,7 +1,9 @@
 package main
 
 import (
+	"crypto/md5"
 	"database/sql/driver"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,6 +11,7 @@ import (
 	"log"
 	"math"
 	"net/http"
+	"net/url"
 	"os"
 	"sort"
 	"strconv"
@@ -557,6 +560,92 @@ func getCVSStoreName(order *WooOrder) string {
 		}
 	}
 	return ""
+}
+
+type ecpayShippingInfo struct {
+	LogisticsID      string
+	LogisticsSubType string
+	PaymentNo        string
+	ValidationNo     string
+}
+
+func getEcpayShippingInfo(order *WooOrder) *ecpayShippingInfo {
+	for _, meta := range order.MetaData {
+		if meta.Key == "_ecpay_shipping_info" {
+			if m, ok := meta.Value.(map[string]interface{}); ok {
+				for k, v := range m {
+					info := &ecpayShippingInfo{LogisticsID: k}
+					if innerMap, ok := v.(map[string]interface{}); ok {
+						if st, ok := innerMap["LogisticsSubType"].(string); ok {
+							info.LogisticsSubType = st
+						}
+						if pn, ok := innerMap["PaymentNo"].(string); ok {
+							info.PaymentNo = pn
+						}
+						if vn, ok := innerMap["ValidationNo"].(string); ok {
+							info.ValidationNo = vn
+						}
+					}
+					return info
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func ecpayPrintURL(logisticsSubType string) string {
+	switch logisticsSubType {
+	case "UNIMARTC2C":
+		return "https://logistics.ecpay.com.tw/Express/PrintUniMartC2COrderInfo"
+	case "FAMIC2C":
+		return "https://logistics.ecpay.com.tw/Express/PrintFAMIC2COrderInfo"
+	case "HILIFEC2C":
+		return "https://logistics.ecpay.com.tw/Express/PrintHILIFEC2COrderInfo"
+	case "OKMARTC2C":
+		return "https://logistics.ecpay.com.tw/Express/PrintOKMARTC2COrderInfo"
+	default:
+		return "https://logistics.ecpay.com.tw/helper/printTradeDocument"
+	}
+}
+
+func generateCheckMacValue(params map[string]string, hashKey, hashIV string) string {
+	// 1. Sort keys
+	keys := make([]string, 0, len(params))
+	for k := range params {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	// 2. Build key=value& string
+	var buf strings.Builder
+	buf.WriteString("HashKey=" + hashKey + "&")
+	for i, k := range keys {
+		buf.WriteString(k + "=" + params[k])
+		if i < len(keys)-1 {
+			buf.WriteString("&")
+		}
+	}
+	buf.WriteString("&HashIV=" + hashIV)
+
+	// 3. URL encode
+	encoded := url.QueryEscape(buf.String())
+
+	// 4. To lower case
+	encoded = strings.ToLower(encoded)
+
+	// 5. .NET-style URL encoding replacements
+	encoded = strings.ReplaceAll(encoded, "%2d", "-")
+	encoded = strings.ReplaceAll(encoded, "%5f", "_")
+	encoded = strings.ReplaceAll(encoded, "%2e", ".")
+	encoded = strings.ReplaceAll(encoded, "%21", "!")
+	encoded = strings.ReplaceAll(encoded, "%2a", "*")
+	encoded = strings.ReplaceAll(encoded, "%28", "(")
+	encoded = strings.ReplaceAll(encoded, "%29", ")")
+
+	// 6. MD5 hash → uppercase
+	hash := md5.Sum([]byte(encoded))
+	return strings.ToUpper(hex.EncodeToString(hash[:]))
 }
 
 func buildProductPicking(db *gorm.DB, rows []UploadedOrder) []ProductPickingItem {
@@ -1570,6 +1659,180 @@ func main() {
 		wooOrder.CVSStoreName = getCVSStoreName(&wooOrder)
 
 		c.JSON(http.StatusOK, wooOrder)
+	})
+
+	api.GET("/orders/:id/print-label", func(c *gin.Context) {
+		id, err := strconv.Atoi(c.Param("id"))
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid order ID"})
+			return
+		}
+
+		merchantID := os.Getenv("ECPAY_MERCHANT_ID")
+		hashKey := os.Getenv("ECPAY_HASH_KEY")
+		hashIV := os.Getenv("ECPAY_HASH_IV")
+		if merchantID == "" || hashKey == "" || hashIV == "" {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "ECPay credentials not configured"})
+			return
+		}
+
+		wooOrder, err := fetchSingleOrder(id)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch order: " + err.Error()})
+			return
+		}
+
+		info := getEcpayShippingInfo(&wooOrder)
+		if info == nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "此訂單沒有綠界物流資訊"})
+			return
+		}
+
+		params := map[string]string{
+			"MerchantID":        merchantID,
+			"AllPayLogisticsID": info.LogisticsID,
+		}
+
+		// C2C endpoints require CVSPaymentNo; UniMart C2C also requires CVSValidationNo
+		isC2C := strings.HasSuffix(info.LogisticsSubType, "C2C")
+		if isC2C {
+			params["CVSPaymentNo"] = info.PaymentNo
+			if info.LogisticsSubType == "UNIMARTC2C" {
+				params["CVSValidationNo"] = info.ValidationNo
+			}
+		}
+
+		checkMacValue := generateCheckMacValue(params, hashKey, hashIV)
+		printURL := ecpayPrintURL(info.LogisticsSubType)
+
+		// Build hidden input fields
+		var fields strings.Builder
+		for k, v := range params {
+			fields.WriteString(fmt.Sprintf("  <input type=\"hidden\" name=\"%s\" value=\"%s\">\n", k, v))
+		}
+		fields.WriteString(fmt.Sprintf("  <input type=\"hidden\" name=\"CheckMacValue\" value=\"%s\">\n", checkMacValue))
+
+		html := fmt.Sprintf(`<!DOCTYPE html>
+<html>
+<body>
+<form id="ecpay-form" method="POST" action="%s">
+%s</form>
+<script>document.getElementById('ecpay-form').submit();</script>
+</body>
+</html>`, printURL, fields.String())
+
+		c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(html))
+	})
+
+	api.GET("/orders/batch-print-label", func(c *gin.Context) {
+		idsParam := c.Query("ids")
+		if idsParam == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "請選擇至少一筆訂單"})
+			return
+		}
+		idStrs := strings.Split(idsParam, ",")
+		var orderIDs []int
+		for _, s := range idStrs {
+			id, err := strconv.Atoi(strings.TrimSpace(s))
+			if err == nil {
+				orderIDs = append(orderIDs, id)
+			}
+		}
+		if len(orderIDs) == 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "請選擇至少一筆訂單"})
+			return
+		}
+		requestBody := struct{ OrderIDs []int }{OrderIDs: orderIDs}
+
+		merchantID := os.Getenv("ECPAY_MERCHANT_ID")
+		hashKey := os.Getenv("ECPAY_HASH_KEY")
+		hashIV := os.Getenv("ECPAY_HASH_IV")
+		if merchantID == "" || hashKey == "" || hashIV == "" {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "ECPay credentials not configured"})
+			return
+		}
+
+		// Group orders by LogisticsSubType, collect comma-separated values
+		type printGroup struct {
+			logisticsIDs   []string
+			paymentNos     []string
+			validationNos  []string
+			subType        string
+		}
+		groups := make(map[string]*printGroup)
+
+		for _, orderID := range requestBody.OrderIDs {
+			wooOrder, err := fetchSingleOrder(orderID)
+			if err != nil {
+				continue
+			}
+			info := getEcpayShippingInfo(&wooOrder)
+			if info == nil {
+				continue
+			}
+			g, ok := groups[info.LogisticsSubType]
+			if !ok {
+				g = &printGroup{subType: info.LogisticsSubType}
+				groups[info.LogisticsSubType] = g
+			}
+			g.logisticsIDs = append(g.logisticsIDs, info.LogisticsID)
+			g.paymentNos = append(g.paymentNos, info.PaymentNo)
+			g.validationNos = append(g.validationNos, info.ValidationNo)
+		}
+
+		if len(groups) == 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "所選訂單都沒有綠界物流資訊"})
+			return
+		}
+
+		// Build one auto-submit form per subType group (max 4 per form)
+		var forms strings.Builder
+		formIdx := 0
+		for _, g := range groups {
+			// Split into chunks of 4 (ECPay batch limit)
+			for i := 0; i < len(g.logisticsIDs); i += 4 {
+				end := i + 4
+				if end > len(g.logisticsIDs) {
+					end = len(g.logisticsIDs)
+				}
+
+				params := map[string]string{
+					"MerchantID":        merchantID,
+					"AllPayLogisticsID": strings.Join(g.logisticsIDs[i:end], ","),
+				}
+
+				isC2C := strings.HasSuffix(g.subType, "C2C")
+				if isC2C {
+					params["CVSPaymentNo"] = strings.Join(g.paymentNos[i:end], ",")
+					if g.subType == "UNIMARTC2C" {
+						params["CVSValidationNo"] = strings.Join(g.validationNos[i:end], ",")
+					}
+				}
+
+				checkMacValue := generateCheckMacValue(params, hashKey, hashIV)
+				printURL := ecpayPrintURL(g.subType)
+
+				formID := fmt.Sprintf("ecpay-form-%d", formIdx)
+				forms.WriteString(fmt.Sprintf("<form id=\"%s\" method=\"POST\" action=\"%s\">\n", formID, printURL))
+				for k, v := range params {
+					forms.WriteString(fmt.Sprintf("  <input type=\"hidden\" name=\"%s\" value=\"%s\">\n", k, v))
+				}
+				forms.WriteString(fmt.Sprintf("  <input type=\"hidden\" name=\"CheckMacValue\" value=\"%s\">\n", checkMacValue))
+				forms.WriteString("</form>\n")
+				forms.WriteString(fmt.Sprintf("<script>document.getElementById('%s').submit();</script>\n", formID))
+				formIdx++
+			}
+		}
+
+		html := fmt.Sprintf(`<!DOCTYPE html>
+<html>
+<body>
+%s
+<p>托運單列印中，可關閉此頁面。</p>
+</body>
+</html>`, forms.String())
+
+		c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(html))
 	})
 
 	api.POST("/orders/batch", func(c *gin.Context) {

@@ -28,6 +28,9 @@
             <button class="btn btn-success ms-2" id="export-order-list-btn" onclick="exportOrderList()">
               <i class="bi bi-table me-2"></i>匯出訂單列表
             </button>
+            <button class="btn btn-outline-secondary ms-2" onclick="batchPrintLabels()">
+              <i class="bi bi-printer me-2"></i>批次列印托運單
+            </button>
             <span class="ms-2 text-muted" id="selected-count">已選擇 0 筆訂單</span>
           </div>
         </div>
@@ -90,6 +93,7 @@
                 <th>標籤</th>
                 <th>是否完成</th>
                 <th>詳細</th>
+                <th>托運單</th>
               </tr>
             </thead>
             <tbody id="orders-list">

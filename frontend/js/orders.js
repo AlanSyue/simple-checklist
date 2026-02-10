@@ -228,7 +228,7 @@ function renderOrders() {
   });
 
   if (!filteredOrders || filteredOrders.length === 0) {
-    list.innerHTML = `<tr><td colspan="13" class="text-center text-muted py-4">沒有符合條件的訂單</td></tr>`;
+    list.innerHTML = `<tr><td colspan="14" class="text-center text-muted py-4">沒有符合條件的訂單</td></tr>`;
     return;
   }
 
@@ -249,6 +249,11 @@ function renderOrders() {
       hour12: false
     }).replace(/\//g, '-') : 'N/A';
 
+    const hasEcpayShipping = order.meta_data?.some(m => m.key === "_ecpay_shipping_info");
+    const printLabelHtml = hasEcpayShipping
+      ? `<button class="btn btn-sm btn-outline-secondary" onclick="printShippingLabel(${order.id})">列印</button>`
+      : '';
+
     row.innerHTML = `
       <td><input type="checkbox" class="form-check-input order-checkbox" data-order-id="${order.id}" ${isSelected ? 'checked' : ''} onchange="toggleOrderSelection(${order.id})"></td>
       <td><a href="#" onclick="showOrderDetails(${order.id}); return false;">${order.id}</a></td>
@@ -263,6 +268,7 @@ function renderOrders() {
       <td class="tag-cell" id="tags-${order.id}"></td>
       <td><input type="checkbox" class="form-check-input is-completed-checkbox" ${order.order_metadata.is_completed ? 'checked' : ''} onchange="updateOrderMetadata(${order.id})"></td>
       <td><button class="btn btn-sm btn-info" onclick="showOrderDetails(${order.id})">詳細</button></td>
+      <td>${printLabelHtml}</td>
     `;
     list.appendChild(row);
 
@@ -587,6 +593,20 @@ async function exportPickingList() {
       exportBtn.innerHTML = originalBtnHTML;
     }
   }
+}
+
+function printShippingLabel(orderId) {
+  window.open(`/api/orders/${orderId}/print-label`, '_blank');
+}
+
+function batchPrintLabels() {
+  if (selectedOrderIds.size === 0) {
+    alert('請先勾選要列印的訂單');
+    return;
+  }
+
+  const orderIds = Array.from(selectedOrderIds).join(',');
+  window.open(`/api/orders/batch-print-label?ids=${orderIds}`, '_blank');
 }
 
 // 產生揀貨單 PDF
