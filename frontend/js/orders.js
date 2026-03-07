@@ -599,14 +599,48 @@ function printShippingLabel(orderId) {
   window.open(`/api/orders/${orderId}/print-label`, '_blank');
 }
 
-function batchPrintLabels() {
+async function batchPrintLabels() {
   if (selectedOrderIds.size === 0) {
     alert('請先勾選要列印的訂單');
     return;
   }
 
-  const orderIds = Array.from(selectedOrderIds).join(',');
-  window.open(`/api/orders/batch-print-label?ids=${orderIds}`, '_blank');
+  const orderIds = Array.from(selectedOrderIds);
+
+  // Fetch orders to group by logistics type
+  try {
+    const response = await fetch('/api/orders/batch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ order_ids: orderIds.map(Number) })
+    });
+    const orders = await response.json();
+
+    // Group order IDs by logistics sub type
+    const groups = {};
+    for (const order of orders) {
+      const ecpayMeta = order.meta_data?.find(m => m.key === '_ecpay_shipping_info');
+      if (!ecpayMeta || typeof ecpayMeta.value !== 'object') continue;
+
+      const firstKey = Object.keys(ecpayMeta.value)[0];
+      const data = ecpayMeta.value[firstKey];
+      const subType = data?.LogisticsSubType || 'OTHER';
+
+      if (!groups[subType]) groups[subType] = [];
+      groups[subType].push(order.id);
+    }
+
+    // Open one print tab per logistics type
+    for (const [subType, ids] of Object.entries(groups)) {
+      const idsParam = ids.join(',');
+      window.open(`/api/orders/batch-print-label?ids=${idsParam}`, '_blank');
+    }
+  } catch (err) {
+    console.error('批次列印分組失敗:', err);
+    // Fallback: open all at once
+    const idsParam = orderIds.join(',');
+    window.open(`/api/orders/batch-print-label?ids=${idsParam}`, '_blank');
+  }
 }
 
 // 產生揀貨單 PDF

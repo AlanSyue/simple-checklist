@@ -1862,7 +1862,7 @@ func main() {
     }
     .label-page:last-child { page-break-after: avoid; }
     .label-page img {
-        width: 190%%;
+        width: 160%%;
         max-width: none;
     }
     #printPageButton { display: none; }
@@ -1875,7 +1875,7 @@ body { margin: 20px; text-align: center; }
     max-width: 100mm;
     overflow: hidden;
 }
-.label-page img { width: 190%%; max-width: none; }
+.label-page img { width: 160%%; max-width: none; }
 </style>
 </head>
 <body>
@@ -1951,7 +1951,6 @@ body { margin: 20px; text-align: center; }
 		// Server-side proxy: POST to ECPay for each group and collect label content
 		imgRe := regexp.MustCompile(`<img[^>]+src="([^"]+)"`)
 		var allImageURLs []string
-		var unimartPatchedHtml string
 
 		for _, g := range groups {
 			if g.subType == "UNIMARTC2C" {
@@ -1974,31 +1973,24 @@ body { margin: 20px; text-align: center; }
 				client := newCookieClient()
 				resp, err := client.PostForm(printURL, formData)
 				if err != nil {
-					log.Printf("批次列印 UNIMART: 無法連線綠界: %v", err)
-					continue
+					c.JSON(http.StatusInternalServerError, gin.H{"error": "無法連線綠界列印服務: " + err.Error()})
+					return
 				}
 				ecpayBody, err := io.ReadAll(resp.Body)
 				resp.Body.Close()
 				if err != nil {
-					log.Printf("批次列印 UNIMART: 讀取回應失敗: %v", err)
-					continue
+					c.JSON(http.StatusInternalServerError, gin.H{"error": "讀取綠界回應失敗: " + err.Error()})
+					return
 				}
 
 				sevenHtml, err := followEcpayFormRedirect(client, string(ecpayBody))
 				if err != nil {
-					log.Printf("批次列印 UNIMART redirect: %v", err)
-					continue
-				}
-
-				// If ONLY unimart orders, return patched 7-11 HTML directly
-				if len(groups) == 1 {
-					c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(patchUnimartHtml(sevenHtml)))
+					c.JSON(http.StatusInternalServerError, gin.H{"error": "無法取得 7-11 列印頁面: " + err.Error()})
 					return
 				}
 
-				// Mixed types: store patched HTML for later merging
-				unimartPatchedHtml = patchUnimartHtml(sevenHtml)
-				continue
+				c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(patchUnimartHtml(sevenHtml)))
+				return
 			}
 
 			// Other logistics types: extract <img> one by one
@@ -2046,31 +2038,14 @@ body { margin: 20px; text-align: center; }
 			}
 		}
 
-		// If we only had UNIMARTC2C and it was handled above (len(groups)==1 case),
-		// we would have returned already. Handle remaining cases:
-
-		if len(allImageURLs) == 0 && unimartPatchedHtml == "" {
-			c.Data(http.StatusOK, "text/html; charset=utf-8", []byte("無法解析任何標籤圖片，請用單筆列印查看綠界原始回應"))
-			return
-		}
-
-		// If only UNIMARTC2C in a mixed scenario (no images from other types)
-		if len(allImageURLs) == 0 && unimartPatchedHtml != "" {
-			c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(unimartPatchedHtml))
+		if len(allImageURLs) == 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "無法從綠界回應中解析任何標籤圖片"})
 			return
 		}
 
 		var labelPages strings.Builder
 		for _, imgURL := range allImageURLs {
 			labelPages.WriteString(fmt.Sprintf("<div class=\"label-page\"><img src=\"%s\"></div>\n", imgURL))
-		}
-
-		// If mixed types, embed UNIMARTC2C HTML via iframe srcdoc
-		if unimartPatchedHtml != "" {
-			// Escape quotes for srcdoc attribute
-			escaped := strings.ReplaceAll(unimartPatchedHtml, "&", "&amp;")
-			escaped = strings.ReplaceAll(escaped, "\"", "&quot;")
-			labelPages.WriteString(fmt.Sprintf("<div class=\"label-page label-html\"><iframe srcdoc=\"%s\" style=\"width:100%%;height:100%%;border:none;\"></iframe></div>\n", escaped))
 		}
 
 		html := fmt.Sprintf(`<!DOCTYPE html>
@@ -2091,7 +2066,7 @@ body { margin: 20px; text-align: center; }
     }
     .label-page:last-child { page-break-after: avoid; }
     .label-page img {
-        width: 190%%;
+        width: 160%%;
         max-width: none;
     }
     .label-html iframe {
@@ -2108,7 +2083,7 @@ body { margin: 20px; text-align: center; }
     max-width: 100mm;
     overflow: hidden;
 }
-.label-page img { width: 190%%; max-width: none; }
+.label-page img { width: 160%%; max-width: none; }
 </style>
 </head>
 <body>
