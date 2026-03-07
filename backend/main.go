@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"regexp"
 	"math"
 	"net/http"
 	"net/url"
@@ -1705,21 +1706,80 @@ func main() {
 		checkMacValue := generateCheckMacValue(params, hashKey, hashIV)
 		printURL := ecpayPrintURL(info.LogisticsSubType)
 
-		// Build hidden input fields
-		var fields strings.Builder
+		// Server-side proxy: POST to ECPay and parse response
+		formData := url.Values{}
 		for k, v := range params {
-			fields.WriteString(fmt.Sprintf("  <input type=\"hidden\" name=\"%s\" value=\"%s\">\n", k, v))
+			formData.Set(k, v)
 		}
-		fields.WriteString(fmt.Sprintf("  <input type=\"hidden\" name=\"CheckMacValue\" value=\"%s\">\n", checkMacValue))
+		formData.Set("CheckMacValue", checkMacValue)
+
+		resp, err := http.PostForm(printURL, formData)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "無法連線綠界列印服務: " + err.Error()})
+			return
+		}
+		defer resp.Body.Close()
+
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "讀取綠界回應失敗: " + err.Error()})
+			return
+		}
+
+		// Extract img src URLs from ECPay response HTML
+		imgRe := regexp.MustCompile(`<img[^>]+src="([^"]+)"`)
+		matches := imgRe.FindAllStringSubmatch(string(body), -1)
+		if len(matches) == 0 {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "無法從綠界回應中解析標籤圖片"})
+			return
+		}
+
+		var labelPages strings.Builder
+		for _, m := range matches {
+			labelPages.WriteString(fmt.Sprintf("<div class=\"label-page\"><img src=\"%s\"></div>\n", m[1]))
+		}
 
 		html := fmt.Sprintf(`<!DOCTYPE html>
 <html>
+<head>
+<style>
+@media print {
+    @page {
+        size: 100mm 150mm;
+        margin: 0;
+    }
+    body { margin: 0; padding: 0; }
+    .label-page {
+        page-break-after: always;
+        width: 100mm;
+        height: 150mm;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+    }
+    .label-page:last-child { page-break-after: avoid; }
+    .label-page img {
+        max-width: 100%%;
+        max-height: 100%%;
+        object-fit: contain;
+    }
+    #printPageButton { display: none; }
+}
+body { margin: 20px; text-align: center; }
+.label-page {
+    margin: 10px auto;
+    border: 1px dashed #ccc;
+    padding: 10px;
+    max-width: 100mm;
+}
+.label-page img { max-width: 100%%; }
+</style>
+</head>
 <body>
-<form id="ecpay-form" method="POST" action="%s">
-%s</form>
-<script>document.getElementById('ecpay-form').submit();</script>
+<button id="printPageButton" onclick="window.print();">列印</button>
+%s
 </body>
-</html>`, printURL, fields.String())
+</html>`, labelPages.String())
 
 		c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(html))
 	})
@@ -1785,9 +1845,10 @@ func main() {
 			return
 		}
 
-		// Build one auto-submit form per subType group (max 4 per form)
-		var forms strings.Builder
-		formIdx := 0
+		// Server-side proxy: POST to ECPay for each chunk and collect all label images
+		imgRe := regexp.MustCompile(`<img[^>]+src="([^"]+)"`)
+		var allImageURLs []string
+
 		for _, g := range groups {
 			// Split into chunks of 4 (ECPay batch limit)
 			for i := 0; i < len(g.logisticsIDs); i += 4 {
@@ -1812,25 +1873,82 @@ func main() {
 				checkMacValue := generateCheckMacValue(params, hashKey, hashIV)
 				printURL := ecpayPrintURL(g.subType)
 
-				formID := fmt.Sprintf("ecpay-form-%d", formIdx)
-				forms.WriteString(fmt.Sprintf("<form id=\"%s\" method=\"POST\" action=\"%s\">\n", formID, printURL))
+				formData := url.Values{}
 				for k, v := range params {
-					forms.WriteString(fmt.Sprintf("  <input type=\"hidden\" name=\"%s\" value=\"%s\">\n", k, v))
+					formData.Set(k, v)
 				}
-				forms.WriteString(fmt.Sprintf("  <input type=\"hidden\" name=\"CheckMacValue\" value=\"%s\">\n", checkMacValue))
-				forms.WriteString("</form>\n")
-				forms.WriteString(fmt.Sprintf("<script>document.getElementById('%s').submit();</script>\n", formID))
-				formIdx++
+				formData.Set("CheckMacValue", checkMacValue)
+
+				resp, err := http.PostForm(printURL, formData)
+				if err != nil {
+					log.Printf("批次列印: 無法連線綠界列印服務: %v", err)
+					continue
+				}
+				body, err := io.ReadAll(resp.Body)
+				resp.Body.Close()
+				if err != nil {
+					log.Printf("批次列印: 讀取綠界回應失敗: %v", err)
+					continue
+				}
+
+				matches := imgRe.FindAllStringSubmatch(string(body), -1)
+				for _, m := range matches {
+					allImageURLs = append(allImageURLs, m[1])
+				}
 			}
+		}
+
+		if len(allImageURLs) == 0 {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "無法從綠界回應中解析任何標籤圖片"})
+			return
+		}
+
+		var labelPages strings.Builder
+		for _, imgURL := range allImageURLs {
+			labelPages.WriteString(fmt.Sprintf("<div class=\"label-page\"><img src=\"%s\"></div>\n", imgURL))
 		}
 
 		html := fmt.Sprintf(`<!DOCTYPE html>
 <html>
+<head>
+<style>
+@media print {
+    @page {
+        size: 100mm 150mm;
+        margin: 0;
+    }
+    body { margin: 0; padding: 0; }
+    .label-page {
+        page-break-after: always;
+        width: 100mm;
+        height: 150mm;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+    }
+    .label-page:last-child { page-break-after: avoid; }
+    .label-page img {
+        max-width: 100%%;
+        max-height: 100%%;
+        object-fit: contain;
+    }
+    #printPageButton { display: none; }
+}
+body { margin: 20px; text-align: center; }
+.label-page {
+    margin: 10px auto;
+    border: 1px dashed #ccc;
+    padding: 10px;
+    max-width: 100mm;
+}
+.label-page img { max-width: 100%%; }
+</style>
+</head>
 <body>
+<button id="printPageButton" onclick="window.print();">列印</button>
 %s
-<p>托運單列印中，可關閉此頁面。</p>
 </body>
-</html>`, forms.String())
+</html>`, labelPages.String())
 
 		c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(html))
 	})
