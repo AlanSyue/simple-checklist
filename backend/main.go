@@ -1862,7 +1862,7 @@ func main() {
     }
     .label-page:last-child { page-break-after: avoid; }
     .label-page img {
-        width: 160%%;
+        width: 175%%;
         max-width: none;
     }
     #printPageButton { display: none; }
@@ -1875,7 +1875,7 @@ body { margin: 20px; text-align: center; }
     max-width: 100mm;
     overflow: hidden;
 }
-.label-page img { width: 160%%; max-width: none; }
+.label-page img { width: 175%%; max-width: none; }
 </style>
 </head>
 <body>
@@ -2066,7 +2066,7 @@ body { margin: 20px; text-align: center; }
     }
     .label-page:last-child { page-break-after: avoid; }
     .label-page img {
-        width: 160%%;
+        width: 175%%;
         max-width: none;
     }
     .label-html iframe {
@@ -2083,7 +2083,7 @@ body { margin: 20px; text-align: center; }
     max-width: 100mm;
     overflow: hidden;
 }
-.label-page img { width: 160%%; max-width: none; }
+.label-page img { width: 175%%; max-width: none; }
 </style>
 </head>
 <body>
