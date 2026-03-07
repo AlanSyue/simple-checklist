@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"math"
 	"net/http"
+	"net/http/cookiejar"
 	"net/url"
 	"os"
 	"sort"
@@ -649,8 +650,9 @@ func generateCheckMacValue(params map[string]string, hashKey, hashIV string) str
 	return strings.ToUpper(hex.EncodeToString(hash[:]))
 }
 
-// followEcpayFormRedirect parses auto-submit form from ECPay HTML and POSTs to target URL
-func followEcpayFormRedirect(htmlBody string) (string, error) {
+// followEcpayFormRedirect parses auto-submit form from ECPay HTML and POSTs to target URL.
+// Uses the provided http.Client to maintain cookies across redirects.
+func followEcpayFormRedirect(client *http.Client, htmlBody string) (string, error) {
 	actionRe := regexp.MustCompile(`action="([^"]+)"`)
 	actionMatch := actionRe.FindStringSubmatch(htmlBody)
 	if actionMatch == nil {
@@ -666,7 +668,7 @@ func followEcpayFormRedirect(htmlBody string) (string, error) {
 		formData.Set(input[1], input[2])
 	}
 
-	resp, err := http.PostForm(targetURL, formData)
+	resp, err := client.PostForm(targetURL, formData)
 	if err != nil {
 		return "", fmt.Errorf("POST to %s failed: %w", targetURL, err)
 	}
@@ -678,6 +680,12 @@ func followEcpayFormRedirect(htmlBody string) (string, error) {
 	}
 
 	return string(body), nil
+}
+
+// newCookieClient creates an http.Client with a cookie jar for maintaining session cookies
+func newCookieClient() *http.Client {
+	jar, _ := cookiejar.New(nil)
+	return &http.Client{Jar: jar}
 }
 
 // patchUnimartHtml modifies 7-11 HTML for thermal label printing (100mm x 150mm)
@@ -1850,15 +1858,12 @@ func main() {
         page-break-after: always;
         width: 100mm;
         height: 150mm;
-        display: flex;
-        align-items: center;
-        justify-content: center;
+        overflow: hidden;
     }
     .label-page:last-child { page-break-after: avoid; }
     .label-page img {
-        max-width: 100%%;
-        max-height: 100%%;
-        object-fit: contain;
+        width: 200%%;
+        max-width: none;
     }
     #printPageButton { display: none; }
 }
@@ -1866,10 +1871,11 @@ body { margin: 20px; text-align: center; }
 .label-page {
     margin: 10px auto;
     border: 1px dashed #ccc;
-    padding: 10px;
+    padding: 0;
     max-width: 100mm;
+    overflow: hidden;
 }
-.label-page img { max-width: 100%%; }
+.label-page img { width: 200%%; max-width: none; }
 </style>
 </head>
 <body>
@@ -1965,7 +1971,8 @@ body { margin: 20px; text-align: center; }
 				}
 				formData.Set("CheckMacValue", checkMacValue)
 
-				resp, err := http.PostForm(printURL, formData)
+				client := newCookieClient()
+				resp, err := client.PostForm(printURL, formData)
 				if err != nil {
 					log.Printf("批次列印 UNIMART: 無法連線綠界: %v", err)
 					continue
@@ -1977,7 +1984,7 @@ body { margin: 20px; text-align: center; }
 					continue
 				}
 
-				sevenHtml, err := followEcpayFormRedirect(string(ecpayBody))
+				sevenHtml, err := followEcpayFormRedirect(client, string(ecpayBody))
 				if err != nil {
 					log.Printf("批次列印 UNIMART redirect: %v", err)
 					continue
@@ -2080,16 +2087,12 @@ body { margin: 20px; text-align: center; }
         page-break-after: always;
         width: 100mm;
         height: 150mm;
-        display: flex;
-        align-items: center;
-        justify-content: center;
         overflow: hidden;
     }
     .label-page:last-child { page-break-after: avoid; }
     .label-page img {
-        max-width: 100%%;
-        max-height: 100%%;
-        object-fit: contain;
+        width: 200%%;
+        max-width: none;
     }
     .label-html iframe {
         width: 100%% !important;
@@ -2101,10 +2104,11 @@ body { margin: 20px; text-align: center; }
 .label-page {
     margin: 10px auto;
     border: 1px dashed #ccc;
-    padding: 10px;
+    padding: 0;
     max-width: 100mm;
+    overflow: hidden;
 }
-.label-page img { max-width: 100%%; }
+.label-page img { width: 200%%; max-width: none; }
 </style>
 </head>
 <body>
