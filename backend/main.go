@@ -649,6 +649,80 @@ func generateCheckMacValue(params map[string]string, hashKey, hashIV string) str
 	return strings.ToUpper(hex.EncodeToString(hash[:]))
 }
 
+// followEcpayFormRedirect parses auto-submit form from ECPay HTML and POSTs to target URL
+func followEcpayFormRedirect(htmlBody string) (string, error) {
+	actionRe := regexp.MustCompile(`action="([^"]+)"`)
+	actionMatch := actionRe.FindStringSubmatch(htmlBody)
+	if actionMatch == nil {
+		return "", fmt.Errorf("無法解析 form action")
+	}
+	targetURL := actionMatch[1]
+
+	inputRe := regexp.MustCompile(`<input[^>]+name="([^"]+)"[^>]+value="([^"]*)"`)
+	inputs := inputRe.FindAllStringSubmatch(htmlBody, -1)
+
+	formData := url.Values{}
+	for _, input := range inputs {
+		formData.Set(input[1], input[2])
+	}
+
+	resp, err := http.PostForm(targetURL, formData)
+	if err != nil {
+		return "", fmt.Errorf("POST to %s failed: %w", targetURL, err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("read response failed: %w", err)
+	}
+
+	return string(body), nil
+}
+
+// patchUnimartHtml modifies 7-11 HTML for thermal label printing (100mm x 150mm)
+func patchUnimartHtml(html string) string {
+	// Fix relative CSS paths to absolute
+	html = strings.ReplaceAll(html, `href="css/`, `href="https://epayment.7-11.com.tw/C2C/C2CWeb/css/`)
+
+	// Inject thermal print CSS before </head>
+	thermalCSS := `<style>
+@media print {
+    @page { size: 100mm 150mm; margin: 0; }
+    body { margin: 0 !important; padding: 0 !important; }
+    #Panel1 > table { border-collapse: collapse; width: auto; }
+    #Panel1 > table > tbody > tr { display: block; }
+    #Panel1 > table > tbody > tr > td {
+        display: block !important;
+        border: none !important;
+        padding: 0 !important;
+        page-break-after: always;
+    }
+    #Panel1 > table > tbody > tr > td:empty {
+        display: none !important;
+        page-break-after: avoid !important;
+    }
+    #Panel1 > table > tbody > tr > td > div {
+        width: 100mm !important;
+        height: 150mm !important;
+        margin: 0 !important;
+        border: none !important;
+    }
+    p[style*="page-break"] { display: none !important; }
+}
+#printPageButton { position: fixed; top: 10px; right: 10px; z-index: 9999; padding: 8px 16px; cursor: pointer; }
+@media print { #printPageButton { display: none !important; } }
+</style>`
+
+	html = strings.Replace(html, "</head>", thermalCSS+"\n</head>", 1)
+
+	// Add print button after <body> tag
+	bodyRe := regexp.MustCompile(`(<body[^>]*>)`)
+	html = bodyRe.ReplaceAllString(html, `${1}<button id="printPageButton" onclick="window.print();">列印</button>`)
+
+	return html
+}
+
 func buildProductPicking(db *gorm.DB, rows []UploadedOrder) []ProductPickingItem {
 	type accumulator struct {
 		totalQty int
@@ -1726,11 +1800,34 @@ func main() {
 			return
 		}
 
-		// Extract img src URLs from ECPay response HTML
+		// UNIMARTC2C single order: redirect chain is too complex (4 steps + JS),
+		// fall back to browser form-submit approach
+		if info.LogisticsSubType == "UNIMARTC2C" {
+			var fields strings.Builder
+			for k, v := range params {
+				fields.WriteString(fmt.Sprintf("  <input type=\"hidden\" name=\"%s\" value=\"%s\">\n", k, v))
+			}
+			fields.WriteString(fmt.Sprintf("  <input type=\"hidden\" name=\"CheckMacValue\" value=\"%s\">\n", checkMacValue))
+
+			html := fmt.Sprintf(`<!DOCTYPE html>
+<html>
+<body>
+<form id="ecpay-form" method="POST" action="%s">
+%s</form>
+<script>document.getElementById('ecpay-form').submit();</script>
+</body>
+</html>`, printURL, fields.String())
+
+			c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(html))
+			return
+		}
+
+		// Extract img src URLs from ECPay response HTML (for non-UNIMART)
 		imgRe := regexp.MustCompile(`<img[^>]+src="([^"]+)"`)
 		matches := imgRe.FindAllStringSubmatch(string(body), -1)
 		if len(matches) == 0 {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "無法從綠界回應中解析標籤圖片"})
+			// Debug: return raw ECPay HTML to inspect structure
+			c.Data(http.StatusOK, "text/html; charset=utf-8", body)
 			return
 		}
 
@@ -1845,14 +1942,61 @@ body { margin: 20px; text-align: center; }
 			return
 		}
 
-		// Server-side proxy: POST to ECPay for each chunk and collect all label images
+		// Server-side proxy: POST to ECPay for each group and collect label content
 		imgRe := regexp.MustCompile(`<img[^>]+src="([^"]+)"`)
 		var allImageURLs []string
+		var unimartPatchedHtml string
 
 		for _, g := range groups {
-			// Split into chunks of 4 (ECPay batch limit)
-			for i := 0; i < len(g.logisticsIDs); i += 4 {
-				end := i + 4
+			if g.subType == "UNIMARTC2C" {
+				// UNIMARTC2C: send all IDs together, follow redirect to 7-11
+				params := map[string]string{
+					"MerchantID":        merchantID,
+					"AllPayLogisticsID": strings.Join(g.logisticsIDs, ","),
+					"CVSPaymentNo":      strings.Join(g.paymentNos, ","),
+					"CVSValidationNo":   strings.Join(g.validationNos, ","),
+				}
+				checkMacValue := generateCheckMacValue(params, hashKey, hashIV)
+				printURL := ecpayPrintURL(g.subType)
+
+				formData := url.Values{}
+				for k, v := range params {
+					formData.Set(k, v)
+				}
+				formData.Set("CheckMacValue", checkMacValue)
+
+				resp, err := http.PostForm(printURL, formData)
+				if err != nil {
+					log.Printf("批次列印 UNIMART: 無法連線綠界: %v", err)
+					continue
+				}
+				ecpayBody, err := io.ReadAll(resp.Body)
+				resp.Body.Close()
+				if err != nil {
+					log.Printf("批次列印 UNIMART: 讀取回應失敗: %v", err)
+					continue
+				}
+
+				sevenHtml, err := followEcpayFormRedirect(string(ecpayBody))
+				if err != nil {
+					log.Printf("批次列印 UNIMART redirect: %v", err)
+					continue
+				}
+
+				// If ONLY unimart orders, return patched 7-11 HTML directly
+				if len(groups) == 1 {
+					c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(patchUnimartHtml(sevenHtml)))
+					return
+				}
+
+				// Mixed types: store patched HTML for later merging
+				unimartPatchedHtml = patchUnimartHtml(sevenHtml)
+				continue
+			}
+
+			// Other logistics types: extract <img> one by one
+			for i := 0; i < len(g.logisticsIDs); i++ {
+				end := i + 1
 				if end > len(g.logisticsIDs) {
 					end = len(g.logisticsIDs)
 				}
@@ -1865,9 +2009,6 @@ body { margin: 20px; text-align: center; }
 				isC2C := strings.HasSuffix(g.subType, "C2C")
 				if isC2C {
 					params["CVSPaymentNo"] = strings.Join(g.paymentNos[i:end], ",")
-					if g.subType == "UNIMARTC2C" {
-						params["CVSValidationNo"] = strings.Join(g.validationNos[i:end], ",")
-					}
 				}
 
 				checkMacValue := generateCheckMacValue(params, hashKey, hashIV)
@@ -1898,14 +2039,31 @@ body { margin: 20px; text-align: center; }
 			}
 		}
 
-		if len(allImageURLs) == 0 {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "無法從綠界回應中解析任何標籤圖片"})
+		// If we only had UNIMARTC2C and it was handled above (len(groups)==1 case),
+		// we would have returned already. Handle remaining cases:
+
+		if len(allImageURLs) == 0 && unimartPatchedHtml == "" {
+			c.Data(http.StatusOK, "text/html; charset=utf-8", []byte("無法解析任何標籤圖片，請用單筆列印查看綠界原始回應"))
+			return
+		}
+
+		// If only UNIMARTC2C in a mixed scenario (no images from other types)
+		if len(allImageURLs) == 0 && unimartPatchedHtml != "" {
+			c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(unimartPatchedHtml))
 			return
 		}
 
 		var labelPages strings.Builder
 		for _, imgURL := range allImageURLs {
 			labelPages.WriteString(fmt.Sprintf("<div class=\"label-page\"><img src=\"%s\"></div>\n", imgURL))
+		}
+
+		// If mixed types, embed UNIMARTC2C HTML via iframe srcdoc
+		if unimartPatchedHtml != "" {
+			// Escape quotes for srcdoc attribute
+			escaped := strings.ReplaceAll(unimartPatchedHtml, "&", "&amp;")
+			escaped = strings.ReplaceAll(escaped, "\"", "&quot;")
+			labelPages.WriteString(fmt.Sprintf("<div class=\"label-page label-html\"><iframe srcdoc=\"%s\" style=\"width:100%%;height:100%%;border:none;\"></iframe></div>\n", escaped))
 		}
 
 		html := fmt.Sprintf(`<!DOCTYPE html>
@@ -1925,12 +2083,17 @@ body { margin: 20px; text-align: center; }
         display: flex;
         align-items: center;
         justify-content: center;
+        overflow: hidden;
     }
     .label-page:last-child { page-break-after: avoid; }
     .label-page img {
         max-width: 100%%;
         max-height: 100%%;
         object-fit: contain;
+    }
+    .label-html iframe {
+        width: 100%% !important;
+        height: 100%% !important;
     }
     #printPageButton { display: none; }
 }
