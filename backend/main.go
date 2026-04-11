@@ -9,15 +9,17 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"regexp"
 	"math"
+	"math/rand/v2"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
 	"os"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -87,6 +89,7 @@ type OrderMetadata struct {
 
 type WooOrder struct {
 	ID                 int            `json:"id"`
+	Status             string         `json:"status"`
 	DateCreated        string         `json:"date_created"`
 	Shipping           ShippingInfo   `json:"shipping"`
 	Billing            BillingInfo    `json:"billing"`
@@ -107,6 +110,8 @@ type BillingInfo struct {
 
 type ShippingInfo struct {
 	FirstName string `json:"first_name"`
+	LastName  string `json:"last_name"`
+	Phone     string `json:"phone"`
 }
 
 type LineItem struct {
@@ -126,6 +131,7 @@ type MetaData struct {
 
 type ShippingLine struct {
 	MethodTitle string `json:"method_title"`
+	MethodID    string `json:"method_id"`
 }
 
 type UploadedOrder struct {
@@ -572,26 +578,70 @@ type ecpayShippingInfo struct {
 }
 
 func getEcpayShippingInfo(order *WooOrder) *ecpayShippingInfo {
+	var (
+		shippingMap      map[string]interface{}
+		activeTrackingNo string // from top-level 運送編號 meta
+	)
 	for _, meta := range order.MetaData {
-		if meta.Key == "_ecpay_shipping_info" {
+		switch meta.Key {
+		case "_ecpay_shipping_info":
 			if m, ok := meta.Value.(map[string]interface{}); ok {
-				for k, v := range m {
-					info := &ecpayShippingInfo{LogisticsID: k}
-					if innerMap, ok := v.(map[string]interface{}); ok {
-						if st, ok := innerMap["LogisticsSubType"].(string); ok {
-							info.LogisticsSubType = st
-						}
-						if pn, ok := innerMap["PaymentNo"].(string); ok {
-							info.PaymentNo = pn
-						}
-						if vn, ok := innerMap["ValidationNo"].(string); ok {
-							info.ValidationNo = vn
-						}
-					}
-					return info
-				}
+				shippingMap = m
+			}
+		case "運送編號":
+			if s, ok := meta.Value.(string); ok {
+				activeTrackingNo = s
 			}
 		}
+	}
+	if shippingMap == nil || len(shippingMap) == 0 {
+		return nil
+	}
+
+	buildInfo := func(k string, v interface{}) *ecpayShippingInfo {
+		info := &ecpayShippingInfo{LogisticsID: k}
+		if innerMap, ok := v.(map[string]interface{}); ok {
+			if st, ok := innerMap["LogisticsSubType"].(string); ok {
+				info.LogisticsSubType = st
+			}
+			if pn, ok := innerMap["PaymentNo"].(string); ok {
+				info.PaymentNo = pn
+			}
+			if vn, ok := innerMap["ValidationNo"].(string); ok {
+				info.ValidationNo = vn
+			}
+		}
+		return info
+	}
+
+	// Phase 1: match active tracking number
+	if activeTrackingNo != "" {
+		for k, v := range shippingMap {
+			info := buildInfo(k, v)
+			if info.PaymentNo+info.ValidationNo == activeTrackingNo {
+				return info
+			}
+		}
+	}
+
+	// Phase 2: fallback to largest LogisticsID (monotonically increasing = newest)
+	var bestKey string
+	var bestID int64 = -1
+	for k := range shippingMap {
+		if id, err := strconv.ParseInt(k, 10, 64); err == nil {
+			if id > bestID {
+				bestID = id
+				bestKey = k
+			}
+		}
+	}
+	if bestKey != "" {
+		return buildInfo(bestKey, shippingMap[bestKey])
+	}
+
+	// Ultra fallback: if LogisticsID isn't numeric (shouldn't happen), grab any
+	for k, v := range shippingMap {
+		return buildInfo(k, v)
 	}
 	return nil
 }
@@ -648,6 +698,425 @@ func generateCheckMacValue(params map[string]string, hashKey, hashIV string) str
 	// 6. MD5 hash → uppercase
 	hash := md5.Sum([]byte(encoded))
 	return strings.ToUpper(hex.EncodeToString(hash[:]))
+}
+
+// reverseString returns s with its bytes in reverse order. Used for building
+// ECPay MerchantTradeNo in the same format as RY-Tools plugin (strrev of unix seconds).
+// Safe for ASCII-only input (unix timestamp digits are ASCII).
+func reverseString(s string) string {
+	b := []byte(s)
+	for i, j := 0, len(b)-1; i < j; i, j = i+1, j-1 {
+		b[i], b[j] = b[j], b[i]
+	}
+	return string(b)
+}
+
+// ReissueResult represents the outcome of a single reissue attempt.
+type ReissueResult struct {
+	OrderID      int    `json:"order_id"`
+	Success      bool   `json:"success"`
+	NewPaymentNo string `json:"new_payment_no,omitempty"`
+	LogisticsID  string `json:"logistics_id,omitempty"`
+	SubType      string `json:"sub_type,omitempty"`
+	Error        string `json:"error,omitempty"`
+}
+
+// subTypeFromShippingMethod maps RY-Tools shipping method IDs to ECPay LogisticsSubType.
+func subTypeFromShippingMethod(methodID string) string {
+	switch methodID {
+	case "ry_ecpay_shipping_cvs_711":
+		return "UNIMARTC2C"
+	case "ry_ecpay_shipping_cvs_family":
+		return "FAMIC2C"
+	case "ry_ecpay_shipping_cvs_hilife":
+		return "HILIFEC2C"
+	case "ry_ecpay_shipping_cvs_ok":
+		return "OKMARTC2C"
+	}
+	return ""
+}
+
+// findMetaString extracts a string-valued meta by key from the order's meta_data.
+func findMetaString(order *WooOrder, key string) string {
+	for _, m := range order.MetaData {
+		if m.Key == key {
+			if s, ok := m.Value.(string); ok {
+				return s
+			}
+		}
+	}
+	return ""
+}
+
+// sanitizeReceiverName matches the RY plugin behaviour: pure ASCII letters → 10 chars,
+// otherwise strip ASCII letters then truncate to 5 Chinese characters.
+func sanitizeReceiverName(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return ""
+	}
+	isPureAscii := true
+	for _, r := range name {
+		if r > 127 {
+			isPureAscii = false
+			break
+		}
+	}
+	if isPureAscii {
+		runes := []rune(name)
+		if len(runes) > 10 {
+			runes = runes[:10]
+		}
+		return string(runes)
+	}
+	// strip ASCII letters and digits, keep CJK and symbols
+	var b strings.Builder
+	for _, r := range name {
+		if (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			continue
+		}
+		b.WriteRune(r)
+	}
+	runes := []rune(b.String())
+	if len(runes) > 5 {
+		runes = runes[:5]
+	}
+	return string(runes)
+}
+
+// truncateRunes truncates a string to at most n runes (character-count, Chinese-safe).
+func truncateRunes(s string, n int) string {
+	runes := []rune(s)
+	if len(runes) > n {
+		runes = runes[:n]
+	}
+	return string(runes)
+}
+
+// --- Reissue in-flight dedup (server-side idempotency) ---
+
+var (
+	reissueInFlight   = make(map[int]time.Time)
+	reissueInFlightMu sync.Mutex
+)
+
+// claimReissueSlot returns false if the same orderID was claimed within the
+// last 30 seconds, otherwise it claims the slot and returns true. It also
+// opportunistically evicts entries older than 5 minutes.
+func claimReissueSlot(orderID int) bool {
+	reissueInFlightMu.Lock()
+	defer reissueInFlightMu.Unlock()
+	now := time.Now()
+	if t, ok := reissueInFlight[orderID]; ok && now.Sub(t) < 30*time.Second {
+		return false
+	}
+	reissueInFlight[orderID] = now
+	for id, ts := range reissueInFlight {
+		if now.Sub(ts) > 5*time.Minute {
+			delete(reissueInFlight, id)
+		}
+	}
+	return true
+}
+
+// putWooOrderRaw sends a PUT to the WooCommerce order endpoint with the given
+// JSON body. Shared by putWooOrderField and putWooOrderMeta.
+func putWooOrderRaw(orderID int, body []byte) error {
+	putURL := fmt.Sprintf("https://flowers.fenny-studio.com/wp-json/wc/v3/orders/%d", orderID)
+	req, err := http.NewRequest("PUT", putURL, strings.NewReader(string(body)))
+	if err != nil {
+		return fmt.Errorf("build PUT request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.SetBasicAuth(os.Getenv("WOO_API_KEY"), os.Getenv("WOO_API_SECRET"))
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("PUT WooCommerce: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		respBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("WooCommerce PUT %d: %s", resp.StatusCode, string(respBody))
+	}
+	return nil
+}
+
+// putWooOrderField PUTs a single top-level order field (e.g. customer_note).
+func putWooOrderField(orderID int, field string, value interface{}) error {
+	body := map[string]interface{}{field: value}
+	jsonBody, err := json.Marshal(body)
+	if err != nil {
+		return fmt.Errorf("marshal PUT body: %w", err)
+	}
+	return putWooOrderRaw(orderID, jsonBody)
+}
+
+// putWooOrderMeta PUTs a meta_data slice to a WC order.
+func putWooOrderMeta(orderID int, metaData []map[string]interface{}) error {
+	body := map[string]interface{}{"meta_data": metaData}
+	jsonBody, err := json.Marshal(body)
+	if err != nil {
+		return fmt.Errorf("marshal PUT body: %w", err)
+	}
+	return putWooOrderRaw(orderID, jsonBody)
+}
+
+// regenerateTracking calls ECPay Create API to reissue a shipping number for an order
+// and writes the result back to the WooCommerce order's meta_data. Never panics and
+// never returns an error — failures are reported via ReissueResult.Error.
+func regenerateTracking(orderID int) ReissueResult {
+	result := ReissueResult{OrderID: orderID}
+
+	// 1. Env sanity.
+	merchantID := os.Getenv("ECPAY_MERCHANT_ID")
+	hashKey := os.Getenv("ECPAY_HASH_KEY")
+	hashIV := os.Getenv("ECPAY_HASH_IV")
+	senderName := os.Getenv("ECPAY_SENDER_NAME")
+	senderPhone := os.Getenv("ECPAY_SENDER_PHONE")
+	senderCell := os.Getenv("ECPAY_SENDER_CELLPHONE")
+	if merchantID == "" || hashKey == "" || hashIV == "" {
+		result.Error = "ECPay credentials not configured"
+		return result
+	}
+	if senderName == "" || senderPhone == "" || senderCell == "" {
+		result.Error = "ECPay sender info not configured (ECPAY_SENDER_NAME/PHONE/CELLPHONE)"
+		return result
+	}
+
+	// 2. Server-side idempotency dedup (catches accidental double-POSTs).
+	if !claimReissueSlot(orderID) {
+		result.Error = "同一訂單 30 秒內已請求過重新取號，請稍候再試"
+		return result
+	}
+
+	// 3. Fetch the current WC order.
+	order, err := fetchSingleOrder(orderID)
+	if err != nil {
+		result.Error = "fetch order: " + err.Error()
+		return result
+	}
+
+	// 4. Order status gate — block terminal/invalid statuses.
+	blockedStatuses := map[string]bool{
+		"cancelled": true,
+		"refunded":  true,
+		"trash":     true,
+		"failed":    true,
+	}
+	if blockedStatuses[order.Status] {
+		result.Error = fmt.Sprintf("訂單狀態為 %s，不允許重新取號", order.Status)
+		return result
+	}
+
+	// 5. Shipping method gate — must be ECPay CVS, using the CURRENT
+	//    shipping_lines (authoritative), not stale _ecpay_shipping_info meta.
+	if len(order.ShippingLines) == 0 {
+		result.Error = "訂單沒有運送項目，無法重新取號"
+		return result
+	}
+	methodID := order.ShippingLines[0].MethodID
+	if !strings.HasPrefix(methodID, "ry_ecpay_shipping_cvs_") {
+		result.Error = fmt.Sprintf("此訂單的運送方式不是綠界超商取貨（目前：%s），無法重新取號", methodID)
+		return result
+	}
+	subType := subTypeFromShippingMethod(methodID)
+	if subType == "" {
+		result.Error = fmt.Sprintf("不支援的綠界 C2C 子類型：%s", methodID)
+		return result
+	}
+
+	// 6. Store ID check.
+	storeID := findMetaString(&order, "_shipping_cvs_store_ID")
+	if storeID == "" {
+		result.Error = "missing _shipping_cvs_store_ID meta"
+		return result
+	}
+
+	// 7. GoodsAmount / GoodsName / Receiver sanitization.
+	goodsAmount := 0
+	if f, perr := strconv.ParseFloat(order.Total, 64); perr == nil {
+		goodsAmount = int(math.Round(f))
+	}
+	if goodsAmount <= 0 {
+		result.Error = "invalid GoodsAmount from order.Total: " + order.Total
+		return result
+	}
+
+	if len(order.LineItems) == 0 {
+		result.Error = "order has no line items"
+		return result
+	}
+	goodsName := truncateRunes(order.LineItems[0].Name, 20)
+
+	receiverName := sanitizeReceiverName(order.Shipping.LastName + order.Shipping.FirstName)
+	if receiverName == "" {
+		result.Error = "empty receiver name"
+		return result
+	}
+
+	receiverCell := strings.NewReplacer("-", "", " ", "").Replace(order.Shipping.Phone)
+	if receiverCell == "" {
+		result.Error = "empty receiver phone"
+		return result
+	}
+
+	// 8. WC write permission pre-check — no-op PUT with current customer_note.
+	// If this fails (e.g. read-only key), we never call ECPay.
+	if err := putWooOrderField(orderID, "customer_note", order.CustomerNote); err != nil {
+		result.Error = "WC write permission check failed: " + err.Error()
+		return result
+	}
+
+	// 9. Build ECPay params.
+	tz, _ := time.LoadLocation("Asia/Taipei")
+	if tz == nil {
+		tz = time.FixedZone("CST", 8*3600)
+	}
+	now := time.Now()
+	// Match RY-Tools plugin's pre_generate_trade_no format so its callback handler
+	// can parse the order ID via strrpos('TS') and correctly route status updates.
+	// Plugin format: <orderPrefix><orderID>TS<1digit><reversed-unix-seconds>
+	// We use empty prefix (plugin's configured prefix is empty on this shop).
+	randDigit := rand.IntN(10) // 0-9
+	reversed := reverseString(strconv.FormatInt(now.Unix(), 10))
+	merchantTradeNo := fmt.Sprintf("%dTS%d%s", orderID, randDigit, reversed)
+	merchantTradeDate := now.In(tz).Format("2006/01/02 15:04:05")
+
+	params := map[string]string{
+		"MerchantID":        merchantID,
+		"MerchantTradeNo":   merchantTradeNo,
+		"MerchantTradeDate": merchantTradeDate,
+		"LogisticsType":     "CVS",
+		"LogisticsSubType":  subType,
+		"GoodsAmount":       strconv.Itoa(goodsAmount),
+		"GoodsName":         goodsName,
+		"IsCollection":      "N",
+		"CollectionAmount":  "0",
+		"SenderName":        senderName,
+		"SenderPhone":       senderPhone,
+		"SenderCellPhone":   senderCell,
+		"ReceiverName":      receiverName,
+		"ReceiverCellPhone": receiverCell,
+		"ReceiverStoreID":   storeID,
+		"ServerReplyURL":    "https://flowers.fenny-studio.com/wc-api/ry_ecpay_shipping_callback/",
+	}
+	params["CheckMacValue"] = generateCheckMacValue(params, hashKey, hashIV)
+
+	form := url.Values{}
+	for k, v := range params {
+		form.Set(k, v)
+	}
+
+	// 10. Log before POST.
+	log.Printf("[reissue] order=%d MerchantTradeNo=%s subType=%s storeID=%s goodsAmount=%d",
+		orderID, merchantTradeNo, subType, storeID, goodsAmount)
+
+	// 11. POST to ECPay.
+	httpClient := &http.Client{Timeout: 30 * time.Second}
+	req, err := http.NewRequest("POST", "https://logistics.ecpay.com.tw/Express/Create", strings.NewReader(form.Encode()))
+	if err != nil {
+		result.Error = "build request: " + err.Error()
+		return result
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		result.Error = "ECPay request: " + err.Error()
+		return result
+	}
+	defer resp.Body.Close()
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		result.Error = "read ECPay response: " + err.Error()
+		return result
+	}
+	bodyStr := string(bodyBytes)
+
+	// 12. Log after POST (always — success or failure).
+	log.Printf("[reissue] order=%d ECPay HTTP=%d body=%q", orderID, resp.StatusCode, bodyStr)
+
+	// 13. Parse response.
+	parts := strings.SplitN(bodyStr, "|", 2)
+	if len(parts) != 2 {
+		result.Error = "malformed ECPay response: " + bodyStr
+		return result
+	}
+	if parts[0] != "1" {
+		result.Error = "ECPay: " + parts[1]
+		return result
+	}
+
+	values, perr := url.ParseQuery(parts[1])
+	if perr != nil {
+		result.Error = "parse ECPay data: " + perr.Error()
+		return result
+	}
+	logisticsID := values.Get("AllPayLogisticsID")
+	paymentNo := values.Get("CVSPaymentNo")
+	validationNo := values.Get("CVSValidationNo")
+	bookingNote := values.Get("BookingNote")
+	respSubType := values.Get("LogisticsSubType")
+	if respSubType != "" {
+		subType = respSubType
+	}
+	if logisticsID == "" {
+		result.Error = "ECPay returned empty AllPayLogisticsID: " + bodyStr
+		return result
+	}
+
+	// 14. Log after parse with new IDs — critical for recovery if WC PUT fails.
+	log.Printf("[reissue] order=%d ECPay OK LogisticsID=%s PaymentNo=%s ValidationNo=%s",
+		orderID, logisticsID, paymentNo, validationNo)
+
+	// 15. Merge new entry into _ecpay_shipping_info.
+	nowStr := now.In(tz).Format("2006-01-02T15:04:05-07:00")
+	newEntry := map[string]interface{}{
+		"ID":               logisticsID,
+		"LogisticsType":    "CVS",
+		"LogisticsSubType": subType,
+		"PaymentNo":        paymentNo,
+		"ValidationNo":     validationNo,
+		"store_ID":         storeID,
+		"BookingNote":      bookingNote,
+		"status":           300,
+		"status_msg":       "已成功",
+		"create":           nowStr,
+		"edit":             nowStr,
+		"amount":           goodsAmount,
+		"IsCollection":     "N",
+		"temp":             "1",
+	}
+
+	mergedMap := map[string]interface{}{}
+	for _, meta := range order.MetaData {
+		if meta.Key == "_ecpay_shipping_info" {
+			if m, ok := meta.Value.(map[string]interface{}); ok {
+				for k, v := range m {
+					mergedMap[k] = v
+				}
+			}
+		}
+	}
+	mergedMap[logisticsID] = newEntry
+
+	combinedNo := paymentNo + validationNo
+
+	// 16. PUT meta back to WC.
+	if err := putWooOrderMeta(orderID, []map[string]interface{}{
+		{"key": "_ecpay_shipping_info", "value": mergedMap},
+		{"key": "運送編號", "value": combinedNo},
+	}); err != nil {
+		result.Error = err.Error()
+		return result
+	}
+
+	// 17. Return success.
+	result.Success = true
+	result.NewPaymentNo = combinedNo
+	result.LogisticsID = logisticsID
+	result.SubType = subType
+	return result
 }
 
 // followEcpayFormRedirect parses auto-submit form from ECPay HTML and POSTs to target URL.
@@ -1744,6 +2213,25 @@ func main() {
 		c.JSON(http.StatusOK, wooOrder)
 	})
 
+	api.POST("/orders/regenerate-tracking", func(c *gin.Context) {
+		var req struct {
+			OrderIDs []int `json:"order_ids"`
+		}
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body: " + err.Error()})
+			return
+		}
+		if len(req.OrderIDs) == 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "order_ids is empty"})
+			return
+		}
+		results := make([]ReissueResult, 0, len(req.OrderIDs))
+		for _, id := range req.OrderIDs {
+			results = append(results, regenerateTracking(id))
+		}
+		c.JSON(http.StatusOK, gin.H{"results": results})
+	})
+
 	api.GET("/orders/:id/print-label", func(c *gin.Context) {
 		id, err := strconv.Atoi(c.Param("id"))
 		if err != nil {
@@ -1917,10 +2405,10 @@ body { margin: 20px; text-align: center; }
 
 		// Group orders by LogisticsSubType, collect comma-separated values
 		type printGroup struct {
-			logisticsIDs   []string
-			paymentNos     []string
-			validationNos  []string
-			subType        string
+			logisticsIDs  []string
+			paymentNos    []string
+			validationNos []string
+			subType       string
 		}
 		groups := make(map[string]*printGroup)
 

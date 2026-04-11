@@ -228,7 +228,7 @@ function renderOrders() {
   });
 
   if (!filteredOrders || filteredOrders.length === 0) {
-    list.innerHTML = `<tr><td colspan="13" class="text-center text-muted py-4">沒有符合條件的訂單</td></tr>`;
+    list.innerHTML = `<tr><td colspan="14" class="text-center text-muted py-4">沒有符合條件的訂單</td></tr>`;
     return;
   }
 
@@ -249,6 +249,13 @@ function renderOrders() {
       hour12: false
     }).replace(/\//g, '-') : 'N/A';
 
+    const hasEcpayShipping = order.meta_data?.some(m => m.key === "_ecpay_shipping_info");
+    const hasEcpayShippingMethod = order.shipping_lines?.some(s => typeof s.method_id === 'string' && s.method_id.startsWith('ry_ecpay_shipping_cvs_'));
+    const canReissue = hasEcpayShipping || hasEcpayShippingMethod;
+    const reissueBtnHtml = canReissue
+      ? `<button class="btn btn-sm btn-warning reissue-btn" data-order-id="${order.id}" onclick="reissueTracking(${order.id})">重新取號</button>`
+      : '';
+
     row.innerHTML = `
       <td><input type="checkbox" class="form-check-input order-checkbox" data-order-id="${order.id}" ${isSelected ? 'checked' : ''} onchange="toggleOrderSelection(${order.id})"></td>
       <td><a href="#" onclick="showOrderDetails(${order.id}); return false;">${order.id}</a></td>
@@ -263,6 +270,7 @@ function renderOrders() {
       <td class="tag-cell" id="tags-${order.id}"></td>
       <td><input type="checkbox" class="form-check-input is-completed-checkbox" ${order.order_metadata.is_completed ? 'checked' : ''} onchange="updateOrderMetadata(${order.id})"></td>
       <td><button class="btn btn-sm btn-info" onclick="showOrderDetails(${order.id})">詳細</button></td>
+      <td>${reissueBtnHtml}</td>
     `;
     list.appendChild(row);
 
@@ -423,6 +431,10 @@ function updateSelectedCount() {
   const countElement = document.getElementById('selected-count');
   if (countElement) {
     countElement.textContent = `已選擇 ${selectedOrderIds.size} 筆訂單`;
+  }
+  const batchReissueBtn = document.getElementById('batch-reissue-btn');
+  if (batchReissueBtn) {
+    batchReissueBtn.disabled = selectedOrderIds.size === 0;
   }
 }
 
@@ -823,4 +835,139 @@ function generatePickingListPDF(orders) {
   // Save PDF
   const filename = `揀貨單_${new Date().getTime()}.pdf`;
   doc.save(filename);
+}
+
+// ---------- 綠界重新取號 ----------
+
+function _flashRow(orderId, color, errMsg) {
+  const row = document.querySelector(`.order-checkbox[data-order-id="${orderId}"]`)?.closest('tr');
+  if (!row) return;
+  const prevBg = row.style.backgroundColor;
+  row.style.transition = 'background-color 0.8s ease';
+  row.style.backgroundColor = color;
+  if (errMsg) {
+    row.title = errMsg;
+  }
+  setTimeout(() => {
+    row.style.backgroundColor = prevBg || '';
+  }, 2500);
+}
+
+function _updateTrackingInLocal(orderId, newTrackingNo) {
+  // Update meta_data 運送編號 in allOrders / allOrdersUnfiltered so downstream exports see it.
+  [allOrders, allOrdersUnfiltered].forEach(list => {
+    const o = list.find(x => x.id === orderId);
+    if (!o) return;
+    if (!Array.isArray(o.meta_data)) o.meta_data = [];
+    const existing = o.meta_data.find(m => m.key === '運送編號');
+    if (existing) {
+      existing.value = newTrackingNo;
+    } else {
+      o.meta_data.push({ key: '運送編號', value: newTrackingNo });
+    }
+  });
+}
+
+async function _callReissueApi(orderIds) {
+  const res = await fetch('/api/orders/regenerate-tracking', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ order_ids: orderIds })
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`${res.status}: ${text}`);
+  }
+  return await res.json();
+}
+
+async function reissueTracking(orderId) {
+  const btn = document.querySelector(`.reissue-btn[data-order-id="${orderId}"]`);
+  // Save original state BEFORE mutating so finally-block can always restore it.
+  const prevHtml = btn ? btn.innerHTML : '';
+  const prevDisabled = btn ? btn.disabled : false;
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> 重新取號中...';
+  }
+  try {
+    const data = await _callReissueApi([orderId]);
+    const results = Array.isArray(data.results) ? data.results : [];
+    let ok = 0, fail = 0;
+    results.forEach(r => {
+      if (r.success) {
+        ok++;
+        _updateTrackingInLocal(r.order_id, r.new_payment_no || '');
+        _flashRow(r.order_id, '#c8f7c5');
+      } else {
+        fail++;
+        _flashRow(r.order_id, '#f7c5c5', r.error || '未知錯誤');
+      }
+    });
+    showAlert(`重新取號：✓ ${ok} 成功 / ✗ ${fail} 失敗`, fail === 0 ? 'success' : 'warning');
+  } catch (err) {
+    console.error('reissueTracking error:', err);
+    showAlert(`重新取號失敗：${err.message}`, 'danger');
+  } finally {
+    if (btn) {
+      btn.innerHTML = prevHtml || '重新取號';
+      btn.disabled = prevDisabled;
+    }
+  }
+}
+
+async function reissueTrackingBatch() {
+  if (selectedOrderIds.size === 0) {
+    showAlert('請先勾選至少一筆訂單', 'warning');
+    return;
+  }
+  const ids = Array.from(selectedOrderIds);
+  const btn = document.getElementById('batch-reissue-btn');
+  // Save batch-button state BEFORE mutating.
+  const prevHtml = btn ? btn.innerHTML : '';
+  const prevDisabled = btn ? btn.disabled : false;
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = `<span class="spinner-border spinner-border-sm me-2"></span>重新取號中 (${ids.length})...`;
+  }
+  // Also disable every per-row reissue button for rows being processed, and
+  // remember their prior state so we can restore in finally.
+  const perRowBtns = [];
+  ids.forEach(id => {
+    const rowBtn = document.querySelector(`.reissue-btn[data-order-id="${id}"]`);
+    if (rowBtn) {
+      perRowBtns.push({ el: rowBtn, html: rowBtn.innerHTML, disabled: rowBtn.disabled });
+      rowBtn.disabled = true;
+      rowBtn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
+    }
+  });
+  try {
+    const data = await _callReissueApi(ids);
+    const results = Array.isArray(data.results) ? data.results : [];
+    let ok = 0, fail = 0;
+    results.forEach(r => {
+      if (r.success) {
+        ok++;
+        _updateTrackingInLocal(r.order_id, r.new_payment_no || '');
+        _flashRow(r.order_id, '#c8f7c5');
+      } else {
+        fail++;
+        _flashRow(r.order_id, '#f7c5c5', r.error || '未知錯誤');
+      }
+    });
+    showAlert(`批次重新取號：✓ ${ok} 成功 / ✗ ${fail} 失敗`, fail === 0 ? 'success' : 'warning');
+  } catch (err) {
+    console.error('reissueTrackingBatch error:', err);
+    showAlert(`批次重新取號失敗：${err.message}`, 'danger');
+  } finally {
+    if (btn) {
+      btn.innerHTML = prevHtml || '批次重新取號';
+      // Keep it disabled if there's no selection, otherwise restore prior state.
+      btn.disabled = selectedOrderIds.size === 0 ? true : prevDisabled;
+    }
+    perRowBtns.forEach(({ el, html, disabled }) => {
+      el.innerHTML = html;
+      el.disabled = disabled;
+    });
+  }
 }
