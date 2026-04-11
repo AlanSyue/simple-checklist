@@ -1,1 +1,7 @@
 .env
+
+# Go build artifact (produced by `go build` in backend/)
+backend/checklist
+
+# Claude Code per-user permission allowlist (not for team sharing)
+.claude/settings.local.json
