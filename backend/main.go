@@ -87,11 +87,6 @@ type OrderMetadata struct {
 	IsCompleted bool        `json:"is_completed"`
 }
 
-type OrderDisplayWhitelist struct {
-	OrderID   int       `gorm:"primaryKey" json:"order_id"`
-	CreatedAt time.Time `json:"created_at"`
-}
-
 type WooOrder struct {
 	ID                 int            `json:"id"`
 	Status             string         `json:"status"`
@@ -1583,7 +1578,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to connect to database after multiple attempts: %v", err)
 	}
-	db.AutoMigrate(&ChecklistItem{}, &OrderMetadata{}, &UploadedOrder{}, &UploadBatch{}, &ProductNameMapping{}, &OrderDisplayWhitelist{})
+	db.AutoMigrate(&ChecklistItem{}, &OrderMetadata{}, &UploadedOrder{}, &UploadBatch{}, &ProductNameMapping{})
 
 	// --- Gin Router Setup ---
 	r := gin.Default()
@@ -2051,31 +2046,10 @@ func main() {
 	// ... (file content up to the new routes)
 	// --- New WooCommerce Routes ---
 	api.GET("/orders", func(c *gin.Context) {
-		var whitelist []OrderDisplayWhitelist
-		if err := db.Order("order_id ASC").Find(&whitelist).Error; err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
-		if len(whitelist) == 0 {
-			c.JSON(http.StatusOK, []WooOrder{})
-			return
-		}
-		whitelistIDs := make([]int, len(whitelist))
-		for i, w := range whitelist {
-			whitelistIDs[i] = w.OrderID
-		}
-
-		fetched, err := fetchMultipleOrders(whitelistIDs)
+		wooOrders, err := fetchProcessingOrders()
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
-		}
-
-		wooOrders := make([]WooOrder, 0, len(fetched))
-		for _, o := range fetched {
-			if o.Status == "processing" {
-				wooOrders = append(wooOrders, o)
-			}
 		}
 
 		// Get all order IDs
@@ -2661,66 +2635,6 @@ body { margin: 20px; text-align: center; }
 		}
 
 		c.JSON(http.StatusOK, orders)
-	})
-
-	api.POST("/orders/whitelist", func(c *gin.Context) {
-		var body struct {
-			IDs []int `json:"ids"`
-		}
-		if err := c.ShouldBindJSON(&body); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
-			return
-		}
-
-		seen := make(map[int]bool)
-		dedup := make([]int, 0, len(body.IDs))
-		for _, id := range body.IDs {
-			if !seen[id] {
-				seen[id] = true
-				dedup = append(dedup, id)
-			}
-		}
-
-		err := db.Transaction(func(tx *gorm.DB) error {
-			if err := tx.Where("1 = 1").Delete(&OrderDisplayWhitelist{}).Error; err != nil {
-				return err
-			}
-			if len(dedup) == 0 {
-				return nil
-			}
-			records := make([]OrderDisplayWhitelist, len(dedup))
-			now := time.Now()
-			for i, id := range dedup {
-				records[i] = OrderDisplayWhitelist{OrderID: id, CreatedAt: now}
-			}
-			return tx.Create(&records).Error
-		})
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
-		c.JSON(http.StatusOK, gin.H{"count": len(dedup)})
-	})
-
-	api.GET("/orders/whitelist", func(c *gin.Context) {
-		var whitelist []OrderDisplayWhitelist
-		if err := db.Order("order_id ASC").Find(&whitelist).Error; err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
-		ids := make([]int, len(whitelist))
-		for i, w := range whitelist {
-			ids[i] = w.OrderID
-		}
-		c.JSON(http.StatusOK, gin.H{"ids": ids})
-	})
-
-	api.DELETE("/orders/whitelist", func(c *gin.Context) {
-		if err := db.Where("1 = 1").Delete(&OrderDisplayWhitelist{}).Error; err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
-		c.JSON(http.StatusOK, gin.H{"status": "ok"})
 	})
 
 	// Route for searching orders by products
